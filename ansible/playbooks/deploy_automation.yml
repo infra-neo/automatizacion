@@ -1,0 +1,7 @@
+---
+---
+- name: Deploy automation system
+	hosts: all
+	become: yes
+	roles:
+		- automation

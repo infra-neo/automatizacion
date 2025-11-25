@@ -1,0 +1,8 @@
+---
+---
+- name: Run automation in manual mode
+	hosts: all
+	become: yes
+	tasks:
+		- name: Run manual script
+			shell: /opt/automation/run_manual.sh
