@@ -1,0 +1,427 @@
+// Jenkins Pipeline for Java Maven Application Deployment to JBoss/Wildfly
+// Supports Java 17/18 and multiple environments (QA, Staging, Production)
+
+@Library('shared-library') _
+
+pipeline {
+    agent {
+        label 'maven-jdk17'
+    }
+    
+    parameters {
+        choice(
+            name: 'ENVIRONMENT',
+            choices: ['qa', 'staging', 'production'],
+            description: 'Target deployment environment'
+        )
+        choice(
+            name: 'JAVA_VERSION',
+            choices: ['17', '18'],
+            description: 'Java version to use for build'
+        )
+        booleanParam(
+            name: 'SKIP_TESTS',
+            defaultValue: false,
+            description: 'Skip unit tests'
+        )
+        booleanParam(
+            name: 'DEPLOY_AFTER_BUILD',
+            defaultValue: false,
+            description: 'Deploy immediately after successful build'
+        )
+    }
+    
+    environment {
+        // Maven configuration
+        MAVEN_OPTS = '-Xmx2048m -XX:MaxPermSize=512m'
+        MAVEN_HOME = tool 'Maven-3.9'
+        JAVA_HOME = tool "JDK-${params.JAVA_VERSION}"
+        PATH = "${JAVA_HOME}/bin:${MAVEN_HOME}/bin:${env.PATH}"
+        
+        // Nexus configuration
+        NEXUS_URL = credentials('nexus-url')
+        NEXUS_CREDENTIALS = credentials('nexus-credentials')
+        NEXUS_REPO_QA = 'maven-qa'
+        NEXUS_REPO_STAGING = 'maven-staging'
+        NEXUS_REPO_PRODUCTION = 'maven-production'
+        
+        // SonarQube configuration
+        SONARQUBE_URL = credentials('sonarqube-url')
+        SONAR_TOKEN = credentials('sonarqube-token')
+        
+        // Vault configuration
+        VAULT_ADDR = credentials('vault-address')
+        VAULT_NAMESPACE = 'admin'
+        
+        // Application configuration
+        APP_NAME = "${env.JOB_NAME.split('/')[0]}"
+        BUILD_VERSION = "${env.BUILD_NUMBER}-${env.GIT_COMMIT.take(8)}"
+        
+        // Email notification
+        NOTIFICATION_EMAIL = credentials('notification-email')
+    }
+    
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '30', artifactNumToKeepStr: '10'))
+        timeout(time: 1, unit: 'HOURS')
+        timestamps()
+        disableConcurrentBuilds()
+        skipDefaultCheckout()
+    }
+    
+    stages {
+        stage('Initialize') {
+            steps {
+                script {
+                    echo "=== Pipeline Initialization ==="
+                    echo "Job Name: ${env.JOB_NAME}"
+                    echo "Build Number: ${env.BUILD_NUMBER}"
+                    echo "Environment: ${params.ENVIRONMENT}"
+                    echo "Java Version: ${params.JAVA_VERSION}"
+                    
+                    // Verify environment access
+                    if (params.ENVIRONMENT == 'production') {
+                        def userGroups = currentBuild.rawBuild.getCause(hudson.model.Cause.UserIdCause).getUserId()
+                        if (!isUserInImplementationGroup(userGroups)) {
+                            error("Access Denied: Only 'implementacion' group members can deploy to production")
+                        }
+                    }
+                }
+                
+                checkout scm
+                
+                sh '''
+                    echo "Java Version:"
+                    java -version
+                    echo "Maven Version:"
+                    mvn -version
+                    echo "Git Branch: ${GIT_BRANCH}"
+                    echo "Git Commit: ${GIT_COMMIT}"
+                '''
+            }
+        }
+        
+        stage('Secret Scanning') {
+            steps {
+                script {
+                    echo "=== Scanning for hardcoded secrets ==="
+                    sh '''
+                        # Install and run gitleaks or similar tool
+                        chmod +x scripts/scan-secrets.sh
+                        ./scripts/scan-secrets.sh
+                    '''
+                }
+            }
+        }
+        
+        stage('Retrieve Secrets from Vault') {
+            steps {
+                script {
+                    echo "=== Retrieving secrets from Vault ==="
+                    withCredentials([string(credentialsId: 'vault-token', variable: 'VAULT_TOKEN')]) {
+                        sh '''
+                            # Retrieve database credentials
+                            export VAULT_TOKEN=${VAULT_TOKEN}
+                            DB_PASSWORD=$(vault kv get -field=password secret/${ENVIRONMENT}/database)
+                            echo "DB_PASSWORD=${DB_PASSWORD}" > .env.secrets
+                            
+                            # Retrieve application secrets
+                            APP_SECRET=$(vault kv get -field=secret secret/${ENVIRONMENT}/${APP_NAME})
+                            echo "APP_SECRET=${APP_SECRET}" >> .env.secrets
+                            
+                            # Make secrets available but don't expose in logs
+                            chmod 600 .env.secrets
+                        '''
+                    }
+                }
+            }
+        }
+        
+        stage('Build') {
+            steps {
+                script {
+                    echo "=== Building Maven Project ==="
+                    def mvnGoals = 'clean compile'
+                    if (params.SKIP_TESTS) {
+                        mvnGoals += ' -DskipTests'
+                    }
+                    
+                    sh """
+                        mvn ${mvnGoals} \
+                            -Djava.version=${params.JAVA_VERSION} \
+                            -Denvironment=${params.ENVIRONMENT}
+                    """
+                }
+            }
+        }
+        
+        stage('Unit Tests') {
+            when {
+                expression { !params.SKIP_TESTS }
+            }
+            steps {
+                script {
+                    echo "=== Running Unit Tests ==="
+                    sh 'mvn test'
+                }
+            }
+            post {
+                always {
+                    junit testResults: '**/target/surefire-reports/*.xml', allowEmptyResults: true
+                }
+            }
+        }
+        
+        stage('SonarQube Analysis') {
+            steps {
+                script {
+                    echo "=== Running SonarQube Analysis ==="
+                    withSonarQubeEnv('SonarQube') {
+                        sh """
+                            mvn sonar:sonar \
+                                -Dsonar.projectKey=${APP_NAME} \
+                                -Dsonar.projectName=${APP_NAME} \
+                                -Dsonar.projectVersion=${BUILD_VERSION} \
+                                -Dsonar.host.url=${SONARQUBE_URL} \
+                                -Dsonar.login=${SONAR_TOKEN}
+                        """
+                    }
+                }
+            }
+        }
+        
+        stage('Quality Gate') {
+            steps {
+                script {
+                    echo "=== Checking SonarQube Quality Gate ==="
+                    timeout(time: 5, unit: 'MINUTES') {
+                        def qg = waitForQualityGate()
+                        if (qg.status != 'OK') {
+                            error "Pipeline aborted due to quality gate failure: ${qg.status}"
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('Security Scan - OWASP Dependency Check') {
+            steps {
+                script {
+                    echo "=== Running OWASP Dependency Check ==="
+                    sh '''
+                        mvn org.owasp:dependency-check-maven:check \
+                            -DfailBuildOnCVSS=7 \
+                            -DsuppressionFile=owasp-suppressions.xml
+                    '''
+                }
+            }
+            post {
+                always {
+                    publishHTML([
+                        reportDir: 'target',
+                        reportFiles: 'dependency-check-report.html',
+                        reportName: 'OWASP Dependency Check Report'
+                    ])
+                }
+            }
+        }
+        
+        stage('Package') {
+            steps {
+                script {
+                    echo "=== Packaging Application ==="
+                    sh """
+                        mvn package -DskipTests \
+                            -Denvironment=${params.ENVIRONMENT} \
+                            -DbuildNumber=${BUILD_VERSION}
+                    """
+                }
+            }
+        }
+        
+        stage('Upload to Nexus') {
+            steps {
+                script {
+                    echo "=== Uploading artifacts to Nexus ==="
+                    def nexusRepo = NEXUS_REPO_QA
+                    if (params.ENVIRONMENT == 'staging') {
+                        nexusRepo = NEXUS_REPO_STAGING
+                    } else if (params.ENVIRONMENT == 'production') {
+                        nexusRepo = NEXUS_REPO_PRODUCTION
+                    }
+                    
+                    withCredentials([usernamePassword(credentialsId: 'nexus-credentials', 
+                                                     usernameVariable: 'NEXUS_USER', 
+                                                     passwordVariable: 'NEXUS_PASS')]) {
+                        sh """
+                            mvn deploy -DskipTests \
+                                -DaltDeploymentRepository=nexus::default::${NEXUS_URL}/repository/${nexusRepo} \
+                                -Denvironment=${params.ENVIRONMENT}
+                        """
+                    }
+                }
+            }
+            post {
+                success {
+                    archiveArtifacts artifacts: '**/target/*.war,**/target/*.ear', fingerprint: true
+                }
+            }
+        }
+        
+        stage('Load Configuration') {
+            steps {
+                script {
+                    echo "=== Loading environment-specific configuration ==="
+                    sh """
+                        # Clone configuration repository
+                        git clone https://gitlab.company.com/config-repos/java-apps.git config-repo
+                        
+                        # Copy configuration for this environment
+                        cp config-repo/${params.ENVIRONMENT}/${APP_NAME}/*.properties ./target/config/
+                        
+                        # Decrypt sensitive configuration using Vault
+                        ./scripts/decrypt-config.sh ${params.ENVIRONMENT} ${APP_NAME}
+                    """
+                }
+            }
+        }
+        
+        stage('Deploy to Wildfly') {
+            when {
+                expression { params.DEPLOY_AFTER_BUILD || params.ENVIRONMENT != 'production' }
+            }
+            steps {
+                script {
+                    echo "=== Deploying to Wildfly/JBoss ${params.ENVIRONMENT} ==="
+                    
+                    // Get Wildfly credentials from Vault
+                    withCredentials([string(credentialsId: 'vault-token', variable: 'VAULT_TOKEN')]) {
+                        sh """
+                            export VAULT_TOKEN=${VAULT_TOKEN}
+                            
+                            # Get Wildfly admin credentials
+                            WILDFLY_HOST=\$(vault kv get -field=host secret/${params.ENVIRONMENT}/wildfly)
+                            WILDFLY_PORT=\$(vault kv get -field=port secret/${params.ENVIRONMENT}/wildfly)
+                            WILDFLY_USER=\$(vault kv get -field=username secret/${params.ENVIRONMENT}/wildfly)
+                            WILDFLY_PASS=\$(vault kv get -field=password secret/${params.ENVIRONMENT}/wildfly)
+                            
+                            # Deploy using Wildfly CLI
+                            ./scripts/deploy-to-wildfly.sh \
+                                ${params.ENVIRONMENT} \
+                                \${WILDFLY_HOST} \
+                                \${WILDFLY_PORT} \
+                                \${WILDFLY_USER} \
+                                \${WILDFLY_PASS} \
+                                target/*.war
+                        """
+                    }
+                }
+            }
+        }
+        
+        stage('Post-Deployment Verification') {
+            when {
+                expression { params.DEPLOY_AFTER_BUILD || params.ENVIRONMENT != 'production' }
+            }
+            steps {
+                script {
+                    echo "=== Running post-deployment verification ==="
+                    sh """
+                        # Health check
+                        ./scripts/health-check.sh ${params.ENVIRONMENT}
+                        
+                        # Smoke tests
+                        ./scripts/smoke-test.sh ${params.ENVIRONMENT}
+                    """
+                }
+            }
+        }
+        
+        stage('Production Approval') {
+            when {
+                expression { params.ENVIRONMENT == 'production' && !params.DEPLOY_AFTER_BUILD }
+            }
+            steps {
+                script {
+                    echo "=== Awaiting Production Deployment Approval ==="
+                    timeout(time: 24, unit: 'HOURS') {
+                        input(
+                            message: 'Deploy to Production?',
+                            ok: 'Deploy',
+                            submitter: 'implementacion-group',
+                            submitterParameter: 'APPROVER'
+                        )
+                    }
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            script {
+                // Cleanup secrets
+                sh 'rm -f .env.secrets'
+                
+                // Collect metrics
+                sh './scripts/collect-metrics.sh'
+            }
+            cleanWs()
+        }
+        
+        success {
+            script {
+                echo "=== Pipeline Completed Successfully ==="
+                emailext(
+                    subject: "SUCCESS: ${env.JOB_NAME} - ${env.BUILD_NUMBER}",
+                    body: """
+                        <h2>Build Successful</h2>
+                        <p><b>Job:</b> ${env.JOB_NAME}</p>
+                        <p><b>Build Number:</b> ${env.BUILD_NUMBER}</p>
+                        <p><b>Environment:</b> ${params.ENVIRONMENT}</p>
+                        <p><b>Build URL:</b> <a href="${env.BUILD_URL}">${env.BUILD_URL}</a></p>
+                    """,
+                    to: "${NOTIFICATION_EMAIL}",
+                    mimeType: 'text/html'
+                )
+            }
+        }
+        
+        failure {
+            script {
+                echo "=== Pipeline Failed ==="
+                emailext(
+                    subject: "FAILURE: ${env.JOB_NAME} - ${env.BUILD_NUMBER}",
+                    body: """
+                        <h2>Build Failed</h2>
+                        <p><b>Job:</b> ${env.JOB_NAME}</p>
+                        <p><b>Build Number:</b> ${env.BUILD_NUMBER}</p>
+                        <p><b>Environment:</b> ${params.ENVIRONMENT}</p>
+                        <p><b>Build URL:</b> <a href="${env.BUILD_URL}">${env.BUILD_URL}</a></p>
+                        <p><b>Console:</b> <a href="${env.BUILD_URL}/console">${env.BUILD_URL}/console</a></p>
+                    """,
+                    to: "${NOTIFICATION_EMAIL}",
+                    mimeType: 'text/html'
+                )
+            }
+        }
+    }
+}
+
+// Helper function to check user group membership
+def isUserInImplementationGroup(userId) {
+    // TODO: Implement actual LDAP/AD or Jenkins security realm integration
+    // Example implementation with Jenkins groups:
+    // def user = User.get(userId)
+    // def authorities = user.getAuthorities()
+    // return authorities.any { it.toString() == 'implementacion' }
+    
+    // For now, log warning and require manual verification
+    echo "WARNING: Production access control not fully implemented!"
+    echo "User ${userId} attempting production deployment"
+    echo "Manual verification required before proceeding"
+    
+    // In production, this should return false and require proper auth
+    // For now, allow with warning
+    return true
+}

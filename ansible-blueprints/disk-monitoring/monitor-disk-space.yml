@@ -1,0 +1,212 @@
+---
+# Ansible Playbook to monitor disk space on Linux systems
+# Alerts when disk usage exceeds thresholds
+
+- name: Monitor disk space usage
+  hosts: all
+  become: yes
+  vars:
+    warning_threshold: "{{ disk_warning_threshold | default(80) }}"
+    critical_threshold: "{{ disk_critical_threshold | default(90) }}"
+    alert_email: "{{ monitoring_email | default('ops@company.com') }}"
+    monitored_filesystems:
+      - "/"
+      - "/var"
+      - "/home"
+      - "/opt"
+      - "/tmp"
+    
+  tasks:
+    - name: Get disk usage information
+      shell: df -h
+      register: disk_usage
+      changed_when: false
+      tags: check
+
+    - name: Display disk usage
+      debug:
+        msg: "{{ disk_usage.stdout_lines }}"
+      tags: check
+
+    - name: Get detailed disk usage in percentage
+      shell: df -h | grep -vE '^Filesystem|tmpfs|cdrom' | awk '{ print $5 " " $1 " " $6 }'
+      register: disk_usage_percent
+      changed_when: false
+      tags: check
+
+    - name: Parse disk usage and identify critical filesystems
+      shell: |
+        df -h | grep -vE '^Filesystem|tmpfs|cdrom' | awk '{print $5 " " $6}' | \
+        while read output; do
+          usage=$(echo $output | awk '{print $1}' | sed 's/%//g')
+          partition=$(echo $output | awk '{print $2}')
+          if [ $usage -ge {{ critical_threshold }} ]; then
+            echo "CRITICAL: $partition at ${usage}%"
+          elif [ $usage -ge {{ warning_threshold }} ]; then
+            echo "WARNING: $partition at ${usage}%"
+          fi
+        done
+      register: disk_alerts
+      changed_when: false
+      tags: check
+
+    - name: Display disk alerts
+      debug:
+        msg: "{{ disk_alerts.stdout_lines }}"
+      when: disk_alerts.stdout_lines | length > 0
+      tags: check
+
+    - name: Check inode usage
+      shell: df -i
+      register: inode_usage
+      changed_when: false
+      tags: check
+
+    - name: Display inode usage
+      debug:
+        msg: "{{ inode_usage.stdout_lines }}"
+      tags: check
+
+    - name: Find large files (>1GB)
+      shell: find / -type f -size +1G -exec ls -lh {} \; 2>/dev/null | head -20
+      register: large_files
+      changed_when: false
+      failed_when: false
+      tags: analysis
+
+    - name: Display large files
+      debug:
+        msg: "{{ large_files.stdout_lines }}"
+      when: large_files.stdout_lines | length > 0
+      tags: analysis
+
+    - name: Find directories consuming most space
+      shell: du -h --max-depth=2 / 2>/dev/null | sort -hr | head -20
+      register: large_dirs
+      changed_when: false
+      failed_when: false
+      tags: analysis
+
+    - name: Display largest directories
+      debug:
+        msg: "{{ large_dirs.stdout_lines }}"
+      when: large_dirs.stdout_lines | length > 0
+      tags: analysis
+
+    - name: Check for old log files
+      find:
+        paths:
+          - /var/log
+        patterns: "*.log*"
+        age: 30d
+        size: 100m
+      register: old_logs
+      tags: cleanup
+
+    - name: Display old log files
+      debug:
+        msg: "Found {{ old_logs.files | length }} old log files consuming space"
+      when: old_logs.files | length > 0
+      tags: cleanup
+
+    - name: Create disk monitoring script
+      copy:
+        content: |
+          #!/bin/bash
+          # Disk space monitoring script
+          
+          WARNING_THRESHOLD={{ warning_threshold }}
+          CRITICAL_THRESHOLD={{ critical_threshold }}
+          ALERT_EMAIL="{{ alert_email }}"
+          HOSTNAME=$(hostname)
+          
+          # Check disk usage
+          df -h | grep -vE '^Filesystem|tmpfs|cdrom' | awk '{print $5 " " $6}' | while read output;
+          do
+            usage=$(echo $output | awk '{print $1}' | sed 's/%//g')
+            partition=$(echo $output | awk '{print $2}')
+            
+            if [ $usage -ge $CRITICAL_THRESHOLD ]; then
+              echo "CRITICAL: $HOSTNAME - $partition is at ${usage}%" | \
+                mail -s "CRITICAL DISK ALERT: $HOSTNAME $partition" $ALERT_EMAIL
+            elif [ $usage -ge $WARNING_THRESHOLD ]; then
+              echo "WARNING: $HOSTNAME - $partition is at ${usage}%" | \
+                mail -s "WARNING DISK ALERT: $HOSTNAME $partition" $ALERT_EMAIL
+            fi
+          done
+          
+          # Log current status
+          echo "$(date): Disk check completed" >> /var/log/disk-monitor.log
+          df -h >> /var/log/disk-monitor.log
+        dest: /usr/local/bin/check_disk_space.sh
+        owner: root
+        group: root
+        mode: '0755'
+      tags: setup
+
+    - name: Set up cron job for disk monitoring
+      cron:
+        name: "Check disk space"
+        minute: "0"
+        hour: "*/4"
+        job: "/usr/local/bin/check_disk_space.sh"
+        user: root
+      tags: setup
+
+    - name: Create disk usage report
+      shell: |
+        cat > /tmp/disk-report-{{ ansible_hostname }}.txt << EOF
+        Disk Usage Report for {{ ansible_hostname }}
+        Generated: $(date)
+        
+        === Disk Usage ===
+        $(df -h)
+        
+        === Inode Usage ===
+        $(df -i)
+        
+        === Largest Directories ===
+        $(du -h --max-depth=2 / 2>/dev/null | sort -hr | head -20)
+        
+        === Alert Status ===
+        {{ disk_alerts.stdout }}
+        EOF
+      tags: report
+
+    - name: Fetch disk report
+      fetch:
+        src: "/tmp/disk-report-{{ ansible_hostname }}.txt"
+        dest: "./reports/disk-{{ ansible_hostname }}-{{ ansible_date_time.date }}.txt"
+        flat: yes
+      tags: report
+
+    - name: Send email alert if critical threshold exceeded
+      mail:
+        host: "{{ smtp_host | default('localhost') }}"
+        port: "{{ smtp_port | default(25) }}"
+        to: "{{ alert_email }}"
+        subject: "CRITICAL: Disk space alert on {{ ansible_hostname }}"
+        body: |
+          Critical disk space threshold exceeded on {{ ansible_hostname }}
+          
+          {{ disk_alerts.stdout }}
+          
+          Full disk usage:
+          {{ disk_usage.stdout }}
+          
+          Please take immediate action to free up disk space.
+      when: disk_alerts.stdout is search("CRITICAL")
+      tags: alert
+
+    - name: Clean up old log files (optional)
+      file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ old_logs.files }}"
+      when: cleanup_old_logs | default(false) | bool
+      tags: cleanup
+
+  handlers:
+    - name: restart monitoring
+      debug:
+        msg: "Disk monitoring configuration updated"
