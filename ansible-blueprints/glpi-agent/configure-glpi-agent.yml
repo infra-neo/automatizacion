@@ -1,0 +1,258 @@
+---
+# Ansible Playbook to configure and verify GLPI agent
+# Ensures GLPI agent is installed and reporting to GLPI server
+
+- name: Configure GLPI Agent for inventory management
+  hosts: all
+  become: yes
+  vars:
+    glpi_server_url: "{{ glpi_server | default('https://glpi.company.com/plugins/fusioninventory') }}"
+    glpi_agent_version: "{{ agent_version | default('latest') }}"
+    inventory_interval: "{{ glpi_interval | default('24') }}"  # hours
+    agent_config_dir: "/etc/glpi-agent"
+    
+  tasks:
+    - name: Add GLPI agent repository (Debian/Ubuntu)
+      apt_repository:
+        repo: "ppa:glpi-project/agent"
+        state: present
+      when: ansible_os_family == "Debian"
+      tags: install
+
+    - name: Add GLPI agent repository (RHEL/CentOS)
+      yum_repository:
+        name: glpi-agent
+        description: GLPI Agent Repository
+        baseurl: "https://rpm.glpi-project.org/centos/$releasever/$basearch/"
+        gpgcheck: yes
+        gpgkey: "https://rpm.glpi-project.org/RPM-GPG-KEY-GLPI-PROJECT"
+      when: ansible_os_family == "RedHat"
+      tags: install
+
+    - name: Install GLPI agent (Debian/Ubuntu)
+      apt:
+        name: glpi-agent
+        state: "{{ 'latest' if glpi_agent_version == 'latest' else 'present' }}"
+        update_cache: yes
+      when: ansible_os_family == "Debian"
+      tags: install
+
+    - name: Install GLPI agent (RHEL/CentOS)
+      yum:
+        name: glpi-agent
+        state: "{{ 'latest' if glpi_agent_version == 'latest' else 'present' }}"
+      when: ansible_os_family == "RedHat"
+      tags: install
+
+    - name: Create GLPI agent configuration directory
+      file:
+        path: "{{ agent_config_dir }}"
+        state: directory
+        mode: '0755'
+      tags: config
+
+    - name: Configure GLPI agent
+      template:
+        src: templates/agent.cfg.j2
+        dest: "{{ agent_config_dir }}/agent.cfg"
+        owner: root
+        group: root
+        mode: '0644'
+      notify: restart glpi-agent
+      tags: config
+
+    - name: Configure GLPI agent server URL
+      lineinfile:
+        path: "{{ agent_config_dir }}/agent.cfg"
+        regexp: '^server\s*='
+        line: "server = {{ glpi_server_url }}"
+        create: yes
+      notify: restart glpi-agent
+      tags: config
+
+    - name: Set inventory interval
+      lineinfile:
+        path: "{{ agent_config_dir }}/agent.cfg"
+        regexp: '^delaytime\s*='
+        line: "delaytime = {{ inventory_interval }}"
+        create: yes
+      notify: restart glpi-agent
+      tags: config
+
+    - name: Enable debug logging for troubleshooting
+      lineinfile:
+        path: "{{ agent_config_dir }}/agent.cfg"
+        regexp: '^logger\s*='
+        line: "logger = stderr"
+        create: yes
+      when: glpi_debug | default(false)
+      notify: restart glpi-agent
+      tags: config
+
+    - name: Configure additional inventory modules
+      lineinfile:
+        path: "{{ agent_config_dir }}/agent.cfg"
+        line: "{{ item }}"
+        create: yes
+      loop:
+        - "# Inventory modules"
+        - "no-category = printer"
+        - "scan-homedirs = 1"
+        - "scan-profiles = 1"
+      notify: restart glpi-agent
+      tags: config
+
+    - name: Ensure GLPI agent service is enabled and started
+      service:
+        name: glpi-agent
+        state: started
+        enabled: yes
+      tags: service
+
+    - name: Check GLPI agent status
+      command: systemctl status glpi-agent
+      register: agent_status
+      changed_when: false
+      failed_when: false
+      tags: verify
+
+    - name: Display GLPI agent status
+      debug:
+        msg: "{{ agent_status.stdout_lines }}"
+      tags: verify
+
+    - name: Get GLPI agent version
+      command: glpi-agent --version
+      register: agent_version_output
+      changed_when: false
+      tags: verify
+
+    - name: Display GLPI agent version
+      debug:
+        msg: "{{ agent_version_output.stdout }}"
+      tags: verify
+
+    - name: Force inventory run
+      command: glpi-agent --server {{ glpi_server_url }} --force
+      register: inventory_run
+      changed_when: false
+      tags: verify
+
+    - name: Display inventory run output
+      debug:
+        msg: "{{ inventory_run.stdout_lines }}"
+      tags: verify
+
+    - name: Check agent configuration
+      command: glpi-agent --config check
+      register: config_check
+      changed_when: false
+      failed_when: false
+      tags: verify
+
+    - name: Display configuration check result
+      debug:
+        msg: "{{ config_check.stdout_lines }}"
+      tags: verify
+
+    - name: Create cron job for manual inventory trigger
+      cron:
+        name: "GLPI inventory"
+        minute: "0"
+        hour: "2"
+        job: "/usr/bin/glpi-agent --server {{ glpi_server_url }} >> /var/log/glpi-agent-cron.log 2>&1"
+        user: root
+      tags: setup
+
+    - name: Configure firewall for GLPI agent (if needed)
+      firewalld:
+        service: http
+        permanent: yes
+        state: enabled
+        immediate: yes
+      when: ansible_os_family == "RedHat" and configure_firewall | default(false)
+      tags: firewall
+
+    - name: Create log directory for GLPI agent
+      file:
+        path: /var/log/glpi-agent
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+      tags: setup
+
+    - name: Set up log rotation for GLPI agent
+      copy:
+        content: |
+          /var/log/glpi-agent/*.log {
+              daily
+              rotate 7
+              compress
+              delaycompress
+              missingok
+              notifempty
+              create 0644 root root
+          }
+        dest: /etc/logrotate.d/glpi-agent
+        owner: root
+        group: root
+        mode: '0644'
+      tags: setup
+
+    - name: Verify connectivity to GLPI server
+      uri:
+        url: "{{ glpi_server_url }}"
+        method: GET
+        validate_certs: "{{ validate_ssl | default(true) }}"
+        timeout: 10
+      register: glpi_connectivity
+      failed_when: false
+      tags: verify
+
+    - name: Display GLPI server connectivity status
+      debug:
+        msg: "GLPI server is {{ 'reachable' if glpi_connectivity.status == 200 else 'unreachable' }}"
+      tags: verify
+
+    - name: Generate GLPI agent report
+      shell: |
+        cat > /tmp/glpi-agent-report-{{ ansible_hostname }}.txt << EOF
+        GLPI Agent Report for {{ ansible_hostname }}
+        Generated: $(date)
+        
+        === Agent Version ===
+        {{ agent_version_output.stdout }}
+        
+        === Agent Status ===
+        {{ agent_status.stdout }}
+        
+        === Configuration ===
+        Server: {{ glpi_server_url }}
+        Interval: {{ inventory_interval }} hours
+        
+        === Last Inventory Run ===
+        {{ inventory_run.stdout }}
+        
+        === Connectivity ===
+        GLPI Server: {{ 'OK' if glpi_connectivity.status == 200 else 'FAILED' }}
+        EOF
+      tags: report
+
+    - name: Fetch GLPI agent report
+      fetch:
+        src: "/tmp/glpi-agent-report-{{ ansible_hostname }}.txt"
+        dest: "./reports/glpi-{{ ansible_hostname }}-{{ ansible_date_time.date }}.txt"
+        flat: yes
+      tags: report
+
+  handlers:
+    - name: restart glpi-agent
+      service:
+        name: glpi-agent
+        state: restarted
+
+    - name: reload glpi-agent
+      service:
+        name: glpi-agent
+        state: reloaded

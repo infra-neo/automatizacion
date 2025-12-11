@@ -1,0 +1,139 @@
+---
+# Ansible Playbook to monitor active processes on Linux systems
+# This playbook checks for specific processes and alerts if not running
+
+- name: Monitor active processes
+  hosts: all
+  become: yes
+  vars:
+    required_processes:
+      - name: "sshd"
+        description: "SSH Daemon"
+        alert_if_missing: true
+      - name: "crond"
+        description: "Cron Daemon"
+        alert_if_missing: true
+      - name: "rsyslogd"
+        description: "Rsyslog Daemon"
+        alert_if_missing: true
+      - name: "wildfly"
+        description: "Wildfly Application Server"
+        alert_if_missing: true
+        
+    process_check_script: "/usr/local/bin/check_processes.sh"
+    alert_email: "{{ monitoring_email | default('ops@company.com') }}"
+    
+  tasks:
+    - name: Gather process list
+      shell: ps aux
+      register: process_list
+      changed_when: false
+      tags: check
+
+    - name: Check required processes
+      shell: "pgrep -f {{ item.name }}"
+      register: process_check
+      failed_when: false
+      changed_when: false
+      loop: "{{ required_processes }}"
+      tags: check
+
+    - name: Identify missing processes
+      set_fact:
+        missing_processes: "{{ missing_processes | default([]) + [item.item] }}"
+      when: item.rc != 0 and item.item.alert_if_missing
+      loop: "{{ process_check.results }}"
+      tags: check
+
+    - name: Display missing processes
+      debug:
+        msg: "WARNING: Process {{ item.name }} ({{ item.description }}) is not running!"
+      loop: "{{ missing_processes | default([]) }}"
+      tags: check
+
+    - name: Get top CPU consuming processes
+      shell: ps aux --sort=-%cpu | head -n 11
+      register: top_cpu
+      changed_when: false
+      tags: metrics
+
+    - name: Get top memory consuming processes
+      shell: ps aux --sort=-%mem | head -n 11
+      register: top_mem
+      changed_when: false
+      tags: metrics
+
+    - name: Display top CPU processes
+      debug:
+        msg: "{{ top_cpu.stdout_lines }}"
+      tags: metrics
+
+    - name: Display top memory processes
+      debug:
+        msg: "{{ top_mem.stdout_lines }}"
+      tags: metrics
+
+    - name: Count total processes
+      shell: ps aux | wc -l
+      register: process_count
+      changed_when: false
+      tags: metrics
+
+    - name: Display process count
+      debug:
+        msg: "Total processes running: {{ process_count.stdout }}"
+      tags: metrics
+
+    - name: Create process monitoring script
+      template:
+        src: templates/check_processes.sh.j2
+        dest: "{{ process_check_script }}"
+        owner: root
+        group: root
+        mode: '0755'
+      tags: setup
+
+    - name: Set up cron job for process monitoring
+      cron:
+        name: "Check required processes"
+        minute: "*/5"
+        job: "{{ process_check_script }} >> /var/log/process-monitor.log 2>&1"
+        user: root
+      tags: setup
+
+    - name: Create log directory for process monitoring
+      file:
+        path: /var/log/process-monitor
+        state: directory
+        mode: '0755'
+      tags: setup
+
+    - name: Send alert if processes are missing
+      mail:
+        host: "{{ smtp_host | default('localhost') }}"
+        port: "{{ smtp_port | default(25) }}"
+        to: "{{ alert_email }}"
+        subject: "ALERT: Missing processes on {{ ansible_hostname }}"
+        body: |
+          The following required processes are not running on {{ ansible_hostname }}:
+          
+          {% for proc in missing_processes | default([]) %}
+          - {{ proc.name }} ({{ proc.description }})
+          {% endfor %}
+          
+          Please investigate immediately.
+      when: missing_processes is defined and missing_processes | length > 0
+      tags: alert
+
+    - name: Generate process monitoring report
+      template:
+        src: templates/process-report.html.j2
+        dest: "/var/log/process-monitor/report-{{ ansible_date_time.date }}.html"
+        mode: '0644'
+      tags: report
+
+  handlers:
+    - name: restart monitoring
+      service:
+        name: process-monitor
+        state: restarted

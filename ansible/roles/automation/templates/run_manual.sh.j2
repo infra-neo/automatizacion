@@ -1,0 +1,5 @@
+#!/bin/bash
+set -e
+cd /opt/automation
+source .env
+python3 main.py --start-date "$1" --end-date "$2" ${@:3}

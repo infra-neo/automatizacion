@@ -1,0 +1,15 @@
+---
+---
+- name: Copy automation code
+	copy:
+		src: ../../../../automation/
+		dest: /opt/automation/
+		owner: root
+		group: root
+		mode: 0755
+	become: yes
+- name: Install Python requirements
+	pip:
+		requirements: /opt/automation/requirements.txt
+		executable: pip3
+	become: yes

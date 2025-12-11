@@ -1,0 +1,10 @@
+---
+---
+- name: Setup daily cron job
+	cron:
+		name: "Run daily automation"
+		user: root
+		job: "/opt/automation/run_daily.sh"
+		minute: "0"
+		hour: "2"
+		state: present

@@ -1,0 +1,244 @@
+stages:
+  - validate
+  - build
+  - test
+  - security-scan
+  - package
+  - deploy-qa
+  - deploy-staging
+  - deploy-production
+
+variables:
+  MAVEN_OPTS: "-Dmaven.repo.local=$CI_PROJECT_DIR/.m2/repository"
+  JAVA_VERSION: "17"
+  NEXUS_URL: "${NEXUS_BASE_URL}"
+  SONAR_HOST_URL: "${SONARQUBE_URL}"
+  VAULT_ADDR: "${VAULT_ADDRESS}"
+
+# Cache Maven dependencies
+cache:
+  key: ${CI_COMMIT_REF_SLUG}
+  paths:
+    - .m2/repository/
+    - target/
+
+before_script:
+  - echo "Setting up Java ${JAVA_VERSION}"
+  - export JAVA_HOME=/usr/lib/jvm/java-${JAVA_VERSION}-openjdk-amd64
+  - java -version
+  - mvn -version
+
+# Validation stage - Check for sensitive data
+validate:secrets:
+  stage: validate
+  script:
+    - echo "Scanning for sensitive data in code..."
+    - ./scripts/scan-secrets.sh
+  tags:
+    - docker
+  only:
+    - merge_requests
+    - main
+    - develop
+    - qa
+    - staging
+
+# Build stage
+build:maven:
+  stage: build
+  script:
+    - echo "Building Maven project..."
+    - mvn clean compile -DskipTests
+  artifacts:
+    paths:
+      - target/
+    expire_in: 1 hour
+  tags:
+    - docker
+  only:
+    - merge_requests
+    - main
+    - develop
+    - qa
+    - staging
+    - production
+
+# Test stage
+test:unit:
+  stage: test
+  script:
+    - echo "Running unit tests..."
+    - mvn test
+  artifacts:
+    reports:
+      junit:
+        - target/surefire-reports/TEST-*.xml
+  tags:
+    - docker
+  only:
+    - merge_requests
+    - main
+    - develop
+
+test:integration:
+  stage: test
+  script:
+    - echo "Running integration tests..."
+    - mvn verify -DskipUnitTests
+  artifacts:
+    reports:
+      junit:
+        - target/failsafe-reports/TEST-*.xml
+  tags:
+    - docker
+  only:
+    - merge_requests
+    - main
+
+# Security scanning
+security:sonarqube:
+  stage: security-scan
+  script:
+    - echo "Running SonarQube analysis..."
+    - mvn sonar:sonar 
+      -Dsonar.host.url=${SONAR_HOST_URL}
+      -Dsonar.login=${SONARQUBE_TOKEN}
+      -Dsonar.projectKey=${CI_PROJECT_NAME}
+      -Dsonar.projectName=${CI_PROJECT_NAME}
+  tags:
+    - docker
+  only:
+    - merge_requests
+    - main
+    - develop
+
+security:dependency-check:
+  stage: security-scan
+  script:
+    - echo "Running OWASP Dependency Check..."
+    - mvn org.owasp:dependency-check-maven:check
+  artifacts:
+    paths:
+      - target/dependency-check-report.html
+    expire_in: 7 days
+  tags:
+    - docker
+  only:
+    - merge_requests
+    - main
+
+security:secrets-scan:
+  stage: security-scan
+  script:
+    - echo "Scanning for hardcoded secrets..."
+    - ./scripts/scan-secrets.sh --strict
+  allow_failure: false
+  tags:
+    - docker
+  only:
+    - merge_requests
+    - main
+
+# Package stage
+package:war:
+  stage: package
+  script:
+    - echo "Packaging application..."
+    - mvn package -DskipTests
+    - echo "Uploading to Nexus repository..."
+    - mvn deploy -DskipTests -DaltDeploymentRepository=nexus::default::${NEXUS_URL}/repository/maven-${CI_COMMIT_REF_NAME}/
+  artifacts:
+    paths:
+      - target/*.war
+      - target/*.ear
+    expire_in: 30 days
+  tags:
+    - docker
+  only:
+    - qa
+    - staging
+    - production
+    - main
+
+# QA Deployment
+deploy:qa:
+  stage: deploy-qa
+  environment:
+    name: qa
+    url: https://qa.example.com
+  script:
+    - echo "Deploying to QA environment..."
+    - ./scripts/deploy-to-wildfly.sh qa ${WILDFLY_QA_HOST} ${WILDFLY_QA_PORT}
+  only:
+    - qa
+  tags:
+    - deployment
+  when: manual
+  needs:
+    - package:war
+
+# Staging Deployment
+deploy:staging:
+  stage: deploy-staging
+  environment:
+    name: staging
+    url: https://staging.example.com
+  script:
+    - echo "Deploying to Staging environment..."
+    - ./scripts/deploy-to-wildfly.sh staging ${WILDFLY_STAGING_HOST} ${WILDFLY_STAGING_PORT}
+  only:
+    - staging
+  tags:
+    - deployment
+  when: manual
+  needs:
+    - package:war
+  allow_failure: false
+
+# Production Deployment - Highly restricted
+deploy:production:
+  stage: deploy-production
+  environment:
+    name: production
+    url: https://production.example.com
+  script:
+    - echo "Deploying to Production environment..."
+    - echo "Running pre-deployment health checks..."
+    - ./scripts/pre-deploy-checks.sh production
+    - ./scripts/deploy-to-wildfly.sh production ${WILDFLY_PROD_HOST} ${WILDFLY_PROD_PORT}
+    - echo "Running post-deployment verification..."
+    - ./scripts/post-deploy-verify.sh production
+    - echo "Sending deployment notification..."
+    - ./scripts/send-notification.sh "Production deployment completed"
+  only:
+    - production
+  tags:
+    - production-deployment
+  when: manual
+  needs:
+    - package:war
+  allow_failure: false
+  # Only members of 'implementacion' group can deploy to production
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "production"'
+      when: manual
+      allow_failure: false
+
+# Post-deployment notifications
+.notify:
+  stage: .post
+  script:
+    - ./scripts/send-notification.sh "${CI_JOB_STATUS}" "${CI_ENVIRONMENT_NAME}"
+  when: always
+
+notify:success:
+  extends: .notify
+  only:
+    variables:
+      - $CI_JOB_STATUS == "success"
+
+notify:failure:
+  extends: .notify
+  only:
+    variables:
+      - $CI_JOB_STATUS == "failed"
