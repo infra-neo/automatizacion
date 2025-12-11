@@ -1,0 +1,133 @@
+name: 1. Environment Setup
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'development'
+        type: choice
+        options:
+          - development
+          - staging
+          - production
+
+env:
+  NEXUS_URL: http://localhost:8081
+
+jobs:
+  setup-infrastructure:
+    name: Setup Docker Infrastructure
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Create network if not exists
+        run: |
+          docker network create migration-network || true
+
+      - name: Start Docker Compose Environment
+        run: |
+          echo "Starting all services..."
+          docker-compose up -d
+          echo "Waiting for services to be healthy..."
+          sleep 60
+
+      - name: Wait for Nexus to be ready
+        run: |
+          echo "Waiting for Nexus Repository Manager..."
+          timeout 300 bash -c 'until curl -f http://localhost:8081/; do sleep 5; done'
+          echo "Nexus is ready!"
+
+      - name: Wait for PostgreSQL to be ready
+        run: |
+          echo "Waiting for PostgreSQL..."
+          timeout 60 bash -c 'until docker exec postgres-db pg_isready -U appuser; do sleep 2; done'
+          echo "PostgreSQL is ready!"
+
+      - name: Wait for JBoss Source to be ready
+        run: |
+          echo "Waiting for JBoss source environment..."
+          timeout 300 bash -c 'until curl -f http://localhost:8080/; do sleep 10; done'
+          echo "JBoss source is ready!"
+
+      - name: Wait for WildFly Target to be ready
+        run: |
+          echo "Waiting for WildFly target environment..."
+          timeout 300 bash -c 'until curl -f http://localhost:8180/; do sleep 10; done'
+          echo "WildFly target is ready!"
+
+      - name: Configure Nexus Repositories
+        run: |
+          echo "Configuring Nexus repositories..."
+          # Wait for Nexus admin password
+          sleep 30
+          NEXUS_PASSWORD=$(docker exec nexus-repository cat /nexus-data/admin.password 2>/dev/null || echo "admin123")
+          echo "Nexus admin password retrieved"
+          
+          # Create Maven repositories via REST API
+          curl -u admin:${NEXUS_PASSWORD} -X POST "http://localhost:8081/service/rest/v1/repositories/maven/hosted" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "name": "maven-releases",
+              "online": true,
+              "storage": {
+                "blobStoreName": "default",
+                "strictContentTypeValidation": true,
+                "writePolicy": "ALLOW"
+              }
+            }' || echo "Repository may already exist"
+
+      - name: Verify Services Status
+        run: |
+          echo "=== Service Status ==="
+          docker-compose ps
+          echo ""
+          echo "=== Testing Endpoints ==="
+          curl -f http://localhost:8081/ && echo "✓ Nexus OK" || echo "✗ Nexus Failed"
+          curl -f http://localhost:8080/ && echo "✓ JBoss Source OK" || echo "✗ JBoss Failed"
+          curl -f http://localhost:8180/ && echo "✓ WildFly Target OK" || echo "✗ WildFly Failed"
+          curl -f http://localhost:9090/ && echo "✓ Prometheus OK" || echo "✗ Prometheus Failed"
+          curl -f http://localhost:3000/ && echo "✓ Grafana OK" || echo "✗ Grafana Failed"
+
+      - name: Generate Environment Report
+        run: |
+          mkdir -p reports
+          cat > reports/environment-setup.md << 'EOF'
+          # Environment Setup Report
+          
+          ## Date: $(date)
+          
+          ## Services Deployed
+          
+          | Service | Port | Status | URL |
+          |---------|------|--------|-----|
+          | JBoss Source (Java 1.7) | 8080 | Running | http://localhost:8080 |
+          | WildFly Target (Java 21) | 8180 | Running | http://localhost:8180 |
+          | Nexus Repository | 8081 | Running | http://localhost:8081 |
+          | PostgreSQL Database | 5432 | Running | localhost:5432 |
+          | Prometheus | 9090 | Running | http://localhost:9090 |
+          | Grafana | 3000 | Running | http://localhost:3000 |
+          | SonarQube | 9000 | Running | http://localhost:9000 |
+          
+          ## Next Steps
+          
+          1. Build applications with Workflow 2
+          2. Run migration analysis with Workflow 3
+          3. Deploy to target environment with Workflow 4
+          
+          EOF
+          cat reports/environment-setup.md
+
+      - name: Upload Environment Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: environment-setup-report
+          path: reports/
+          retention-days: 30

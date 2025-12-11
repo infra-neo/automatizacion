@@ -1,0 +1,58 @@
+# Build artifacts
+**/target/
+*.war
+*.jar
+*.ear
+
+# IDE files
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Docker volumes (local data)
+nexus-data/
+postgres-data/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Reports (generated locally)
+reports/**/*.html
+reports/**/*.json
+reports/**/*.xml
+
+# Backup files
+backups/
+
+# Maven
+.mvn/
+mvnw
+mvnw.cmd
+
+# Node modules (if any)
+node_modules/
+
+# Environment files
+.env.local
+.env.*.local
+
+# Test outputs
+test-output/
+coverage/
+
+# SonarQube
+.sonar/
+.scannerwork/
