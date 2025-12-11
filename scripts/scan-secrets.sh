@@ -69,11 +69,20 @@ done
 
 # 5. Check for Base64 encoded secrets (common obfuscation attempt)
 echo "5. Checking for Base64 encoded data..."
-if grep -r -E "[A-Za-z0-9+/]{40,}={0,2}" --exclude-dir={.git,target,node_modules} --include="*.java" --include="*.properties" . | grep -v "import\|package\|comment" > "$REPORT_DIR/base64-data.txt" 2>/dev/null; then
+# Break into multiple commands for better readability
+grep -r -E "[A-Za-z0-9+/]{40,}={0,2}" \
+    --exclude-dir={.git,target,node_modules} \
+    --include="*.java" \
+    --include="*.properties" . > "$REPORT_DIR/base64-raw.txt" 2>/dev/null || true
+
+if [ -f "$REPORT_DIR/base64-raw.txt" ]; then
+    # Filter out false positives
+    grep -v "import\|package\|comment" "$REPORT_DIR/base64-raw.txt" > "$REPORT_DIR/base64-data.txt" || true
     if [ -s "$REPORT_DIR/base64-data.txt" ]; then
         echo "INFO: Found potential Base64 encoded data (review required)"
         # Don't fail on this, just warn
     fi
+    rm -f "$REPORT_DIR/base64-raw.txt"
 fi
 
 # 6. Use gitleaks if available

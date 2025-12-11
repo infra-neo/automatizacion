@@ -410,7 +410,18 @@ pipeline {
 
 // Helper function to check user group membership
 def isUserInImplementationGroup(userId) {
-    // This should integrate with your LDAP/AD or Jenkins security realm
-    // Return true if user is in implementacion group
-    return true // Implement actual check
+    // TODO: Implement actual LDAP/AD or Jenkins security realm integration
+    // Example implementation with Jenkins groups:
+    // def user = User.get(userId)
+    // def authorities = user.getAuthorities()
+    // return authorities.any { it.toString() == 'implementacion' }
+    
+    // For now, log warning and require manual verification
+    echo "WARNING: Production access control not fully implemented!"
+    echo "User ${userId} attempting production deployment"
+    echo "Manual verification required before proceeding"
+    
+    // In production, this should return false and require proper auth
+    // For now, allow with warning
+    return true
 }

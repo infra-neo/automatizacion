@@ -68,6 +68,8 @@ services:
       - cicd-network
 
   # Vault - Secrets Management
+  # WARNING: This is configured for DEVELOPMENT only
+  # For production, use proper initialization and unseal process
   vault:
     image: vault:latest
     container_name: vault
@@ -76,7 +78,8 @@ services:
       - "8200:8200"
     environment:
       - VAULT_ADDR=http://0.0.0.0:8200
-      - VAULT_DEV_ROOT_TOKEN_ID=root-token
+      # DEV MODE ONLY - Change for production!
+      - VAULT_DEV_ROOT_TOKEN_ID=${VAULT_DEV_TOKEN:-root-token}
       - VAULT_DEV_LISTEN_ADDRESS=0.0.0.0:8200
     cap_add:
       - IPC_LOCK
@@ -84,6 +87,8 @@ services:
       - vault_data:/vault/data
       - vault_logs:/vault/logs
       - ./vault/config:/vault/config
+    # Use 'server -dev' for development only
+    # For production, use 'server' and provide config file
     command: server -dev
     networks:
       - cicd-network

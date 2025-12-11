@@ -113,7 +113,9 @@ echo "Checking response time..."
 RESPONSE_TIME=$(curl -s -w "%{time_total}" -o /dev/null "${APP_URL}${HEALTH_ENDPOINT}")
 echo "Response time: ${RESPONSE_TIME}s"
 
-if (( $(echo "$RESPONSE_TIME > 5" | bc -l) )); then
+# Use awk for arithmetic comparison (more portable than bc)
+RESPONSE_THRESHOLD=5
+if awk -v rt="$RESPONSE_TIME" -v th="$RESPONSE_THRESHOLD" 'BEGIN {exit !(rt > th)}'; then
     echo "⚠ Warning: Response time is high (>${RESPONSE_TIME}s)"
 fi
 
