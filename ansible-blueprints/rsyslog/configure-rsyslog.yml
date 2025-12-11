@@ -1,0 +1,107 @@
+---
+# Ansible Playbook to configure rsyslog on Linux systems
+# This playbook configures centralized logging using rsyslog
+
+- name: Configure rsyslog for centralized logging
+  hosts: all
+  become: yes
+  vars:
+    rsyslog_server: "{{ central_log_server | default('syslog.company.com') }}"
+    rsyslog_port: "{{ central_log_port | default(514) }}"
+    rsyslog_protocol: "{{ log_protocol | default('tcp') }}"
+    local_log_retention_days: 30
+    
+  tasks:
+    - name: Install rsyslog package
+      package:
+        name: rsyslog
+        state: present
+      tags: install
+
+    - name: Ensure rsyslog service is enabled
+      service:
+        name: rsyslog
+        enabled: yes
+      tags: service
+
+    - name: Create rsyslog configuration directory
+      file:
+        path: /etc/rsyslog.d
+        state: directory
+        mode: '0755'
+      tags: config
+
+    - name: Configure rsyslog to send logs to central server
+      template:
+        src: templates/rsyslog-remote.conf.j2
+        dest: /etc/rsyslog.d/50-remote.conf
+        owner: root
+        group: root
+        mode: '0644'
+      notify: restart rsyslog
+      tags: config
+
+    - name: Configure local log rotation
+      template:
+        src: templates/rsyslog-logrotate.conf.j2
+        dest: /etc/logrotate.d/rsyslog
+        owner: root
+        group: root
+        mode: '0644'
+      tags: config
+
+    - name: Set up custom application logging
+      template:
+        src: templates/rsyslog-apps.conf.j2
+        dest: /etc/rsyslog.d/60-apps.conf
+        owner: root
+        group: root
+        mode: '0644'
+      notify: restart rsyslog
+      tags: config
+
+    - name: Configure SELinux for rsyslog (RHEL/CentOS)
+      seboolean:
+        name: rsyslog_client
+        state: yes
+        persistent: yes
+      when: ansible_os_family == "RedHat" and ansible_selinux.status == "enabled"
+      tags: selinux
+
+    - name: Open firewall for rsyslog if needed
+      firewalld:
+        port: "{{ rsyslog_port }}/{{ rsyslog_protocol }}"
+        permanent: yes
+        state: enabled
+        immediate: yes
+      when: ansible_os_family == "RedHat" and rsyslog_accept_remote | default(false)
+      tags: firewall
+
+    - name: Validate rsyslog configuration
+      command: rsyslogd -N1
+      register: rsyslog_validate
+      changed_when: false
+      failed_when: rsyslog_validate.rc != 0
+      tags: validate
+
+    - name: Display rsyslog version
+      command: rsyslogd -v
+      register: rsyslog_version
+      changed_when: false
+      tags: info
+
+    - name: Show rsyslog version
+      debug:
+        var: rsyslog_version.stdout_lines
+      tags: info
+
+  handlers:
+    - name: restart rsyslog
+      service:
+        name: rsyslog
+        state: restarted
+
+    - name: reload rsyslog
+      service:
+        name: rsyslog
+        state: reloaded
