@@ -1,0 +1,176 @@
+name: Master Migration Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_full_pipeline:
+        description: 'Run complete migration pipeline'
+        required: true
+        type: boolean
+        default: true
+      skip_analysis:
+        description: 'Skip migration analysis (if already done)'
+        type: boolean
+        default: false
+
+jobs:
+  setup:
+    name: Pipeline Setup
+    runs-on: ubuntu-latest
+    outputs:
+      pipeline_id: ${{ steps.id.outputs.pipeline_id }}
+    
+    steps:
+      - name: Generate Pipeline ID
+        id: id
+        run: |
+          PIPELINE_ID="migration-$(date +%Y%m%d-%H%M%S)"
+          echo "pipeline_id=$PIPELINE_ID" >> $GITHUB_OUTPUT
+          echo "Pipeline ID: $PIPELINE_ID"
+
+      - name: Pipeline Overview
+        run: |
+          cat << 'EOF'
+          
+          ╔════════════════════════════════════════════════════════════════╗
+          ║     JBoss to WildFly Automated Migration Pipeline             ║
+          ╚════════════════════════════════════════════════════════════════╝
+          
+          This pipeline will execute the following stages:
+          
+          1. 🔧 Environment Setup
+             - Start Docker containers
+             - Initialize Nexus, PostgreSQL, Monitoring
+             
+          2. 🏗️  Build and Test (Source)
+             - Compile applications with Java 1.7
+             - Run tests on JBoss environment
+             - Code quality and security analysis
+             
+          3. 🔍 Migration Analysis
+             - JBoss Migration Toolkit analysis
+             - Compatibility assessment
+             - Migration plan generation
+             
+          4. 🚀 Migration and Deployment
+             - Backup current deployment
+             - Build for Java 21 / WildFly 31
+             - Deploy to target environment
+             - Comprehensive testing
+             
+          5. 📊 Monitoring and Reporting
+             - Collect metrics
+             - Generate comparison reports
+             - Executive summary
+          
+          EOF
+
+  environment-setup:
+    name: Stage 1 - Environment Setup
+    needs: setup
+    uses: ./.github/workflows/01-environment-setup.yml
+    secrets: inherit
+
+  build-and-test:
+    name: Stage 2 - Build and Test
+    needs: environment-setup
+    uses: ./.github/workflows/02-build-test-source.yml
+    secrets: inherit
+
+  migration-analysis:
+    name: Stage 3 - Migration Analysis
+    needs: build-and-test
+    if: ${{ !inputs.skip_analysis }}
+    uses: ./.github/workflows/03-migration-analysis.yml
+    secrets: inherit
+
+  migration-deployment:
+    name: Stage 4 - Migration and Deployment
+    needs: [build-and-test, migration-analysis]
+    if: always()
+    uses: ./.github/workflows/04-migration-deployment.yml
+    with:
+      deploy_environment: staging
+      backup_enabled: true
+    secrets: inherit
+
+  monitoring-reporting:
+    name: Stage 5 - Monitoring and Reporting
+    needs: migration-deployment
+    uses: ./.github/workflows/05-monitoring-reporting.yml
+    secrets: inherit
+
+  pipeline-summary:
+    name: Pipeline Summary
+    runs-on: ubuntu-latest
+    needs: [setup, environment-setup, build-and-test, migration-analysis, migration-deployment, monitoring-reporting]
+    if: always()
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Generate Pipeline Summary
+        run: |
+          mkdir -p reports/pipeline
+          
+          cat > reports/pipeline/pipeline-summary.md << 'EOF'
+          # Migration Pipeline Execution Summary
+          
+          ## Pipeline ID: ${{ needs.setup.outputs.pipeline_id }}
+          ## Execution Date: $(date)
+          
+          ## Stage Results
+          
+          | Stage | Status | Duration |
+          |-------|--------|----------|
+          | 1. Environment Setup | ${{ needs.environment-setup.result }} | - |
+          | 2. Build and Test | ${{ needs.build-and-test.result }} | - |
+          | 3. Migration Analysis | ${{ needs.migration-analysis.result }} | - |
+          | 4. Migration Deployment | ${{ needs.migration-deployment.result }} | - |
+          | 5. Monitoring & Reporting | ${{ needs.monitoring-reporting.result }} | - |
+          
+          ## Overall Status
+          
+          Pipeline Status: ${{ job.status }}
+          
+          ## Quick Links
+          
+          - [Environment Setup Report](#)
+          - [Build Report](#)
+          - [Migration Analysis](#)
+          - [Deployment Summary](#)
+          - [Executive Summary](#)
+          
+          ## Next Actions
+          
+          Based on pipeline results, the following actions are recommended:
+          
+          - [ ] Review all generated reports
+          - [ ] Address any warnings or recommendations
+          - [ ] Schedule production deployment
+          - [ ] Notify stakeholders
+          - [ ] Update documentation
+          
+          EOF
+          
+          cat reports/pipeline/pipeline-summary.md
+
+      - name: Upload Pipeline Summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipeline-summary-${{ needs.setup.outputs.pipeline_id }}
+          path: reports/pipeline/
+          retention-days: 90
+
+      - name: Final Status
+        run: |
+          echo "════════════════════════════════════════════"
+          echo "  Pipeline Execution Complete"
+          echo "════════════════════════════════════════════"
+          echo ""
+          echo "Pipeline ID: ${{ needs.setup.outputs.pipeline_id }}"
+          echo "Status: ${{ job.status }}"
+          echo ""
+          echo "Check the artifacts for detailed reports."
+          echo "════════════════════════════════════════════"
