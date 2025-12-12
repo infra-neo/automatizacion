@@ -1,15 +1,16 @@
-/.envrc
-/cmdb.html
-/README.html
-/ansible-cmdb*.deb
-/ansible-cmdb*.rpm
-/ansible-cmdb*.tar.gz
-/ansible-cmdb*.zip
-/example/gen_*
-/build/
-/dist/
-/*.whl
-/src/ansible_cmdb.egg-info/
-/example/cmdb/
-__pycache__
+# Python
+venv/
+.venv/
+__pycache__/
 *.pyc
+
+# Ansible runtime
+facts/
+*.retry
+
+# Inventarios locales
+inventory.ini
+inventory.json
+
+# Local / secrets
+.env
