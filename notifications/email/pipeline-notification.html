@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+            border-radius: 5px 5px 0 0;
+        }
+        .header.success {
+            background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+        }
+        .header.failure {
+            background: linear-gradient(135deg, #eb3349 0%, #f45c43 100%);
+        }
+        .header.warning {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+        }
+        .content {
+            background: #f8f9fa;
+            padding: 30px;
+            border-left: 1px solid #dee2e6;
+            border-right: 1px solid #dee2e6;
+        }
+        .detail-row {
+            padding: 10px 0;
+            border-bottom: 1px solid #dee2e6;
+        }
+        .label {
+            font-weight: bold;
+            color: #495057;
+            display: inline-block;
+            width: 150px;
+        }
+        .value {
+            color: #212529;
+        }
+        .footer {
+            background: #e9ecef;
+            padding: 20px;
+            text-align: center;
+            font-size: 12px;
+            color: #6c757d;
+            border-radius: 0 0 5px 5px;
+            border: 1px solid #dee2e6;
+        }
+        .button {
+            display: inline-block;
+            padding: 12px 24px;
+            margin: 20px 0;
+            background: #667eea;
+            color: white;
+            text-decoration: none;
+            border-radius: 5px;
+        }
+        .emoji {
+            font-size: 48px;
+            margin-bottom: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="header {{STATUS_CLASS}}">
+        <div class="emoji">{{EMOJI}}</div>
+        <h1>CI/CD Pipeline Notification</h1>
+        <h2>{{STATUS}}</h2>
+    </div>
+    
+    <div class="content">
+        <div class="detail-row">
+            <span class="label">Environment:</span>
+            <span class="value">{{ENVIRONMENT}}</span>
+        </div>
+        <div class="detail-row">
+            <span class="label">Job Name:</span>
+            <span class="value">{{JOB_NAME}}</span>
+        </div>
+        <div class="detail-row">
+            <span class="label">Build Number:</span>
+            <span class="value">{{BUILD_NUMBER}}</span>
+        </div>
+        <div class="detail-row">
+            <span class="label">Git Commit:</span>
+            <span class="value">{{GIT_COMMIT}}</span>
+        </div>
+        <div class="detail-row">
+            <span class="label">Timestamp:</span>
+            <span class="value">{{TIMESTAMP}}</span>
+        </div>
+        <div class="detail-row">
+            <span class="label">Duration:</span>
+            <span class="value">{{DURATION}}</span>
+        </div>
+        <div class="detail-row">
+            <span class="label">Message:</span>
+            <span class="value">{{MESSAGE}}</span>
+        </div>
+        
+        <center>
+            <a href="{{BUILD_URL}}" class="button">View Build Details</a>
+        </center>
+    </div>
+    
+    <div class="footer">
+        <p>This is an automated notification from the CI/CD system.</p>
+        <p>Please do not reply to this email.</p>
+        <p>&copy; {{YEAR}} {{COMPANY_NAME}} - All rights reserved</p>
+    </div>
+</body>
+</html>

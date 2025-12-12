@@ -1,0 +1,5 @@
+---
+---
+- import_tasks: install_python.yml
+- import_tasks: deploy_app.yml
+- import_tasks: configure_cron.yml

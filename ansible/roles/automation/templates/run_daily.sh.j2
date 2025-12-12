@@ -1,0 +1,6 @@
+#!/bin/bash
+set -e
+cd /opt/automation
+source .env
+today=$(date +%Y-%m-%d)
+python3 main.py --start-date "$today" --end-date "$today"
