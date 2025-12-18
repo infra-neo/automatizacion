@@ -6,12 +6,15 @@ Este repositorio contiene una **infraestructura CI/CD completa y lista para prod
 
 ### Características Principales
 
-✅ **CI/CD Completo**: GitLab CI/CD + Jenkins con pipelines automatizados  
+✅ **CI/CD Completo**: GitLab CI/CD + Jenkins + Semaphore con pipelines automatizados  
 ✅ **Gestión de Secretos**: HashiCorp Vault para manejo seguro de credenciales  
 ✅ **Repositorio de Artefactos**: Nexus separado por ambientes (QA, Staging, Production)  
 ✅ **Análisis de Código**: SonarQube con escaneo de seguridad y calidad  
 ✅ **Monitoreo**: Grafana + Prometheus + Loki para métricas y logs  
-✅ **Automatización**: Ansible blueprints para tareas operacionales  
+✅ **Automatización**: Ansible blueprints para rsyslog, logrotate, GLPI, Zabbix  
+✅ **Gestión de Inventario**: GLPI con FusionInventory para asset management  
+✅ **Servidor de Aplicaciones**: Wildfly para despliegue de aplicaciones Java  
+✅ **Ansible UI**: Semaphore para gestión visual de playbooks  
 ✅ **Seguridad**: Escaneo de secretos, OWASP Dependency Check, análisis SAST  
 ✅ **Notificaciones**: Email, Slack, Teams integrados  
 ✅ **Docker**: Infraestructura completa containerizada  
@@ -26,6 +29,7 @@ Este repositorio contiene una **infraestructura CI/CD completa y lista para prod
 ### Herramientas Integradas
 - **GitLab**: Control de versiones y orquestación CI/CD
 - **Jenkins**: Automatización de builds y despliegues
+- **Semaphore**: UI web para gestión de Ansible
 - **Nexus**: Gestión de artefactos Maven por ambiente
 - **SonarQube**: Análisis de calidad y seguridad de código
 - **HashiCorp Vault**: Gestión centralizada de secretos
@@ -33,6 +37,9 @@ Este repositorio contiene una **infraestructura CI/CD completa y lista para prod
 - **Loki**: Agregación de logs
 - **Prometheus**: Recolección de métricas
 - **Ansible**: Gestión de configuración
+- **GLPI**: Sistema de gestión de inventario IT
+- **Wildfly**: Servidor de aplicaciones Java EE
+- **Zabbix**: Monitoreo de infraestructura (agente)
 
 ## 📁 Estructura del Repositorio
 
@@ -40,10 +47,12 @@ Este repositorio contiene una **infraestructura CI/CD completa y lista para prod
 automatizacion/
 ├── .gitlab-ci.yml              # Pipeline GitLab CI/CD
 ├── ansible-blueprints/         # Blueprints Ansible
-│   ├── rsyslog/               # Configuración rsyslog
+│   ├── rsyslog/               # Configuración y validación rsyslog
+│   ├── logrotate/             # Configuración y validación logrotate
+│   ├── glpi-agent/           # Agente GLPI para inventario
+│   ├── zabbix/               # Agente Zabbix para monitoreo
 │   ├── process-monitoring/    # Monitoreo de procesos
-│   ├── disk-monitoring/       # Monitoreo de disco
-│   └── glpi-agent/           # Agente GLPI
+│   └── disk-monitoring/       # Monitoreo de disco
 ├── config-repos/              # Configuraciones por ambiente
 │   ├── qa/
 │   ├── staging/
@@ -86,11 +95,14 @@ docker-compose up -d
 Después de iniciar, accede a:
 
 - **Jenkins**: http://localhost:8080
+- **Semaphore**: http://localhost:3001 (admin/admin)
 - **Nexus**: http://localhost:8081
 - **SonarQube**: http://localhost:9000
-- **Grafana**: http://localhost:3000
+- **Grafana**: http://localhost:3000 (admin/admin)
 - **Prometheus**: http://localhost:9090
 - **Vault**: http://localhost:8200
+- **GLPI**: http://localhost:8888
+- **Wildfly**: http://localhost:8090 (Management: 9990)
 
 ### 4. Configuración Inicial
 
@@ -151,17 +163,19 @@ vault kv get -field=password secret/qa/database
 ### Blueprints Disponibles
 
 ```bash
-# Configurar rsyslog
+# Configuración y Validación de Servicios
 ansible-playbook ansible-blueprints/rsyslog/configure-rsyslog.yml
+ansible-playbook ansible-blueprints/rsyslog/validate-rsyslog.yml
+ansible-playbook ansible-blueprints/logrotate/configure-logrotate.yml
+ansible-playbook ansible-blueprints/logrotate/validate-logrotate.yml
 
-# Monitorear procesos
-ansible-playbook ansible-blueprints/process-monitoring/monitor-processes.yml
-
-# Monitorear espacio en disco
-ansible-playbook ansible-blueprints/disk-monitoring/monitor-disk-space.yml
-
-# Configurar agente GLPI
+# Gestión de Inventario
 ansible-playbook ansible-blueprints/glpi-agent/configure-glpi-agent.yml
+ansible-playbook ansible-blueprints/zabbix/configure-zabbix-agent.yml
+
+# Monitoreo de Sistema
+ansible-playbook ansible-blueprints/process-monitoring/monitor-processes.yml
+ansible-playbook ansible-blueprints/disk-monitoring/monitor-disk-space.yml
 ```
 
 ## 🏭 Despliegue a Producción
@@ -189,13 +203,34 @@ git push origin production
 
 ## 📖 Documentación Completa
 
-- [Guía Completa](docs/README_COMPLETE.md)
+### Guías de Implementación
+- [Guía de Implementación Completa](docs/IMPLEMENTATION_GUIDE.md) - **NUEVO**
+- [Guía Completa Original](docs/README_COMPLETE.md)
+- [Inicio Rápido](docs/QUICKSTART.md)
+
+### Ansible y Automatización
+- [Documentación de Playbooks Ansible](docs/ANSIBLE_PLAYBOOKS.md) - **NUEVO**
+- [Pipelines de Jenkins](docs/JENKINS_PIPELINES.md) - **NUEVO**
+
+### Servicios Docker
+- [Servicios Docker](docs/DOCKER_SERVICES.md) - **NUEVO**
+- [Docker Setup Original](docker/README.md)
+
+### Integración y Monitoreo
+- [Integración GLPI](docs/GLPI_INTEGRATION.md) - **NUEVO**
+- [Configuración Grafana](grafana/GRAFANA_CONFIGURATION.md)
+- [Configuración Loki](loki/LOKI_CONFIGURATION.md)
+
+### Configuraciones Específicas
 - [Configuración GitLab](gitlab/GITLAB_CONFIGURATION.md)
 - [Configuración Nexus](nexus/NEXUS_CONFIGURATION.md)
 - [Configuración Vault](vault/VAULT_CONFIGURATION.md)
-- [Configuración Grafana](grafana/GRAFANA_CONFIGURATION.md)
-- [Configuración Loki](loki/LOKI_CONFIGURATION.md)
-- [Docker Setup](docker/README.md)
+- [Configuración SonarQube](sonarqube/SONARQUBE_CONFIGURATION.md)
+
+### Otros
+- [Seguridad](docs/SECURITY.md)
+- [Troubleshooting](docs/TROUBLESHOOTING.md)
+- [Screenshots](docs/screenshots/README.md) - **NUEVO**
 
 ## 🛠️ Scripts de Utilidad
 

@@ -1,0 +1,408 @@
+---
+# Ansible Playbook to validate logrotate configuration
+# Checks logrotate installation, configuration, and functionality
+
+- name: Validate logrotate configuration and functionality
+  hosts: all
+  become: yes
+  vars:
+    validation_report_dir: "/tmp/logrotate-validation"
+    test_log_file: "/var/log/test-rotation.log"
+    
+  tasks:
+    - name: Create validation report directory
+      file:
+        path: "{{ validation_report_dir }}"
+        state: directory
+        mode: '0755'
+      tags: setup
+
+    - name: Check if logrotate package is installed
+      package_facts:
+        manager: auto
+      tags: check
+
+    - name: Verify logrotate package is installed
+      assert:
+        that:
+          - "'logrotate' in ansible_facts.packages"
+        fail_msg: "logrotate package is not installed"
+        success_msg: "logrotate package is installed"
+      tags: check
+
+    - name: Get logrotate version
+      command: logrotate --version
+      register: logrotate_version
+      changed_when: false
+      tags: info
+
+    - name: Display logrotate version
+      debug:
+        var: logrotate_version.stdout_lines
+      tags: info
+
+    - name: Check if main logrotate configuration exists
+      stat:
+        path: /etc/logrotate.conf
+      register: main_config
+      tags: check
+
+    - name: Verify main configuration file exists
+      assert:
+        that:
+          - main_config.stat.exists
+        fail_msg: "Main logrotate configuration file not found"
+        success_msg: "Main logrotate configuration file exists"
+      tags: check
+
+    - name: Check logrotate.d directory
+      stat:
+        path: /etc/logrotate.d
+      register: logrotate_d
+      tags: check
+
+    - name: Verify logrotate.d directory exists
+      assert:
+        that:
+          - logrotate_d.stat.exists
+          - logrotate_d.stat.isdir
+        fail_msg: "logrotate.d directory not found"
+        success_msg: "logrotate.d directory exists"
+      tags: check
+
+    - name: Find all logrotate configuration files
+      find:
+        paths: /etc/logrotate.d
+        patterns: "*"
+        file_type: file
+      register: config_files
+      tags: check
+
+    - name: Display found configuration files
+      debug:
+        msg: "Found {{ config_files.matched }} logrotate configuration files"
+      tags: check
+
+    - name: List all configuration files
+      debug:
+        msg: "{{ config_files.files | map(attribute='path') | list }}"
+      tags: check
+
+    - name: Test main logrotate configuration (dry run)
+      command: logrotate -d /etc/logrotate.conf
+      register: main_config_test
+      changed_when: false
+      failed_when: false
+      tags: validate
+
+    - name: Check if main configuration test passed
+      debug:
+        msg: "Main configuration test: {{ 'PASSED' if main_config_test.rc == 0 else 'FAILED' }}"
+      tags: validate
+
+    - name: Display main configuration test output
+      debug:
+        var: main_config_test.stdout_lines
+      when: main_config_test.stdout_lines | length > 0
+      tags: validate
+
+    - name: Test each configuration file individually
+      command: logrotate -d {{ item.path }}
+      loop: "{{ config_files.files }}"
+      register: individual_tests
+      changed_when: false
+      failed_when: false
+      tags: validate
+
+    - name: Display individual configuration test results
+      debug:
+        msg: "{{ item.item.path }}: {{ 'PASSED' if item.rc == 0 else 'FAILED' }}"
+      loop: "{{ individual_tests.results }}"
+      tags: validate
+
+    - name: Check logrotate status file
+      stat:
+        path: /var/lib/logrotate/status
+      register: status_file
+      tags: check
+
+    - name: Display status file information
+      debug:
+        msg: "Status file exists: {{ status_file.stat.exists }}, Last modified: {{ status_file.stat.mtime | default('N/A') }}"
+      tags: check
+
+    - name: Read logrotate status file
+      command: cat /var/lib/logrotate/status
+      register: status_content
+      changed_when: false
+      failed_when: false
+      when: status_file.stat.exists
+      tags: check
+
+    - name: Display status file content (first 20 lines)
+      debug:
+        msg: "{{ status_content.stdout_lines[:20] }}"
+      when: status_file.stat.exists and status_content.stdout_lines | length > 0
+      tags: check
+
+    - name: Check for logrotate cron job
+      shell: crontab -l | grep logrotate || grep -r logrotate /etc/cron.*
+      register: cron_check
+      changed_when: false
+      failed_when: false
+      tags: check
+
+    - name: Display cron job configuration
+      debug:
+        msg: "{{ cron_check.stdout_lines if cron_check.stdout_lines | length > 0 else 'No logrotate cron job found' }}"
+      tags: check
+
+    - name: Check if logrotate cron daily script exists
+      stat:
+        path: /etc/cron.daily/logrotate
+      register: cron_daily
+      tags: check
+
+    - name: Display cron daily script status
+      debug:
+        msg: "Cron daily script exists: {{ cron_daily.stat.exists }}, Executable: {{ cron_daily.stat.executable | default(false) }}"
+      tags: check
+
+    - name: Check for rotated log files
+      find:
+        paths: /var/log
+        patterns: "*.gz,*.1,*.2,*.3,*.4,*.5,*.6,*.7"
+        recurse: yes
+      register: rotated_logs
+      tags: check
+
+    - name: Display count of rotated logs
+      debug:
+        msg: "Found {{ rotated_logs.matched }} rotated log files"
+      tags: check
+
+    - name: List sample of rotated files (first 10)
+      debug:
+        msg: "{{ rotated_logs.files[:10] | map(attribute='path') | list }}"
+      when: rotated_logs.matched > 0
+      tags: check
+
+    - name: Check disk space for /var/log
+      shell: df -h /var/log
+      register: disk_space
+      changed_when: false
+      tags: check
+
+    - name: Display disk space information
+      debug:
+        var: disk_space.stdout_lines
+      tags: check
+
+    - name: Check size of log directory
+      shell: du -sh /var/log
+      register: log_dir_size
+      changed_when: false
+      tags: check
+
+    - name: Display log directory size
+      debug:
+        var: log_dir_size.stdout
+      tags: check
+
+    - name: Find largest log files
+      shell: du -h /var/log/* | sort -rh | head -10
+      register: largest_logs
+      changed_when: false
+      failed_when: false
+      tags: check
+
+    - name: Display largest log files
+      debug:
+        var: largest_logs.stdout_lines
+      tags: check
+
+    - name: Create test log file for rotation
+      copy:
+        content: |
+          Test log entry {{ item }}
+        dest: "{{ test_log_file }}"
+        mode: '0644'
+      loop: "{{ range(1, 100) | list }}"
+      tags: test
+
+    - name: Create test logrotate configuration
+      copy:
+        content: |
+          {{ test_log_file }} {
+              rotate 2
+              size 1k
+              missingok
+              notifempty
+              compress
+              create 0644 root root
+          }
+        dest: /etc/logrotate.d/test-rotation
+        mode: '0644'
+      tags: test
+
+    - name: Test rotation with force flag
+      command: logrotate -f /etc/logrotate.d/test-rotation
+      register: test_rotation
+      changed_when: false
+      failed_when: false
+      tags: test
+
+    - name: Check if test log was rotated
+      find:
+        paths: /var/log
+        patterns: "test-rotation.log*"
+      register: test_rotated_files
+      tags: test
+
+    - name: Display test rotation results
+      debug:
+        msg: "Test rotation {{ 'SUCCESSFUL' if test_rotated_files.matched > 1 else 'FAILED' }} - Found {{ test_rotated_files.matched }} file(s)"
+      tags: test
+
+    - name: Clean up test files
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ test_log_file }}"
+        - "{{ test_log_file }}.1.gz"
+        - /etc/logrotate.d/test-rotation
+      tags: cleanup
+
+    - name: Check logrotate systemd timer (if using systemd)
+      command: systemctl list-timers logrotate*
+      register: systemd_timer
+      changed_when: false
+      failed_when: false
+      when: ansible_service_mgr == "systemd"
+      tags: check
+
+    - name: Display systemd timer status
+      debug:
+        var: systemd_timer.stdout_lines
+      when: ansible_service_mgr == "systemd" and systemd_timer.stdout_lines | length > 0
+      tags: check
+
+    - name: Check for logrotate errors in system logs
+      shell: journalctl -u logrotate --no-pager -n 50 || grep -i logrotate /var/log/syslog | tail -20
+      register: logrotate_logs
+      changed_when: false
+      failed_when: false
+      tags: check
+
+    - name: Display recent logrotate logs
+      debug:
+        var: logrotate_logs.stdout_lines
+      when: logrotate_logs.stdout_lines | length > 0
+      tags: check
+
+    - name: Validate specific service configurations
+      command: logrotate -d /etc/logrotate.d/{{ item }}
+      loop:
+        - syslog
+        - application
+        - wildfly
+        - jenkins
+      register: service_configs
+      changed_when: false
+      failed_when: false
+      tags: validate
+
+    - name: Display service configuration validation results
+      debug:
+        msg: "{{ item.item }}: {{ 'VALID' if item.rc == 0 else 'INVALID' }}"
+      loop: "{{ service_configs.results }}"
+      when: service_configs is defined
+      tags: validate
+
+    - name: Check for SELinux issues with logrotate
+      shell: ausearch -m avc -ts recent | grep logrotate
+      register: selinux_check
+      changed_when: false
+      failed_when: false
+      when: ansible_selinux.status is defined and ansible_selinux.status == "enabled"
+      tags: check
+
+    - name: Display SELinux status
+      debug:
+        msg: "{{ selinux_check.stdout_lines if selinux_check.stdout_lines | length > 0 else 'No SELinux denials found for logrotate' }}"
+      when: ansible_selinux.status is defined and ansible_selinux.status == "enabled"
+      tags: check
+
+    - name: Generate validation report
+      copy:
+        content: |
+          ====================================
+          LOGROTATE VALIDATION REPORT
+          ====================================
+          Host: {{ ansible_hostname }}
+          Date: {{ ansible_date_time.iso8601 }}
+          
+          === LOGROTATE VERSION ===
+          {{ logrotate_version.stdout }}
+          
+          === INSTALLATION STATUS ===
+          Package Installed: YES
+          Main Config Exists: {{ main_config.stat.exists }}
+          Config Directory Exists: {{ logrotate_d.stat.exists }}
+          
+          === CONFIGURATION FILES ===
+          Total Configuration Files: {{ config_files.matched }}
+          Configuration Test: {{ 'PASSED' if main_config_test.rc == 0 else 'FAILED' }}
+          
+          === STATUS FILE ===
+          Status File Exists: {{ status_file.stat.exists }}
+          {% if status_file.stat.exists %}Last Modified: {{ status_file.stat.mtime }}{% endif %}
+          
+          === CRON CONFIGURATION ===
+          Cron Daily Script: {{ 'Exists' if cron_daily.stat.exists else 'Not Found' }}
+          {% if cron_daily.stat.exists %}Executable: {{ cron_daily.stat.executable }}{% endif %}
+          
+          === ROTATED LOGS ===
+          Total Rotated Files: {{ rotated_logs.matched }}
+          
+          === DISK SPACE ===
+          {{ disk_space.stdout }}
+          Log Directory Size: {{ log_dir_size.stdout }}
+          
+          === TEST ROTATION ===
+          Test Status: {{ 'PASSED' if test_rotated_files.matched > 1 else 'FAILED' }}
+          
+          === VALIDATION SUMMARY ===
+          Configuration Valid: {{ 'YES' if main_config_test.rc == 0 else 'NO' }}
+          Cron Configured: {{ 'YES' if cron_daily.stat.exists else 'NO' }}
+          Active Rotations: {{ rotated_logs.matched }}
+          
+          ====================================
+        dest: "{{ validation_report_dir }}/logrotate-validation-{{ ansible_hostname }}.txt"
+        mode: '0644'
+      tags: report
+
+    - name: Fetch validation report
+      fetch:
+        src: "{{ validation_report_dir }}/logrotate-validation-{{ ansible_hostname }}.txt"
+        dest: "./reports/logrotate-validation-{{ ansible_hostname }}-{{ ansible_date_time.date }}.txt"
+        flat: yes
+      tags: report
+
+    - name: Display validation summary
+      debug:
+        msg:
+          - "======================================"
+          - "LOGROTATE VALIDATION SUMMARY"
+          - "======================================"
+          - "Host: {{ ansible_hostname }}"
+          - "Package Installed: YES"
+          - "Configuration Valid: {{ 'YES' if main_config_test.rc == 0 else 'NO' }}"
+          - "Configuration Files: {{ config_files.matched }}"
+          - "Cron Configured: {{ 'YES' if cron_daily.stat.exists else 'NO' }}"
+          - "Rotated Files: {{ rotated_logs.matched }}"
+          - "Test Rotation: {{ 'PASSED' if test_rotated_files.matched > 1 else 'FAILED' }}"
+          - "Disk Space: {{ disk_space.stdout_lines[1] | default('N/A') }}"
+          - "======================================"
+      tags: summary
