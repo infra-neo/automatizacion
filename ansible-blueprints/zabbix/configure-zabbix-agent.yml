@@ -21,11 +21,18 @@
       when: ansible_os_family == "Debian"
       tags: install
 
+    - name: Import Zabbix GPG key (RHEL/CentOS)
+      rpm_key:
+        state: present
+        key: https://repo.zabbix.com/RPM-GPG-KEY-ZABBIX-A14FE591
+      when: ansible_os_family == "RedHat"
+      tags: install
+
     - name: Add Zabbix repository (RHEL/CentOS 8+)
       yum:
         name: "https://repo.zabbix.com/zabbix/{{ zabbix_agent_version }}/rhel/{{ ansible_distribution_major_version }}/x86_64/zabbix-release-{{ zabbix_agent_version }}-1.el{{ ansible_distribution_major_version }}.noarch.rpm"
         state: present
-        disable_gpg_check: yes
+        disable_gpg_check: no
       when: ansible_os_family == "RedHat" and ansible_distribution_major_version | int >= 8
       tags: install
 
@@ -33,7 +40,7 @@
       yum:
         name: "https://repo.zabbix.com/zabbix/{{ zabbix_agent_version }}/rhel/7/x86_64/zabbix-release-{{ zabbix_agent_version }}-1.el7.noarch.rpm"
         state: present
-        disable_gpg_check: yes
+        disable_gpg_check: no
       when: ansible_os_family == "RedHat" and ansible_distribution_major_version == "7"
       tags: install
 

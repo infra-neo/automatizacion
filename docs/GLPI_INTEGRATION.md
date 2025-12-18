@@ -70,12 +70,23 @@ docker-compose up -d glpi glpi-db
 - Database: `glpi`
 
 **Default Credentials:**
-- Super-Admin: `glpi/glpi`
-- Admin: `tech/tech`
-- Normal: `normal/normal`
-- Post-only: `post-only/post-only`
+After initial setup, GLPI creates default accounts. 
 
-**Important:** Change all default passwords immediately!
+**⚠️ CRITICAL SECURITY WARNING:** 
+- All default accounts have well-known credentials
+- Change ALL default passwords IMMEDIATELY after first login
+- Delete or disable unused default accounts
+- Use strong, unique passwords for production
+- Consider integrating with LDAP/Active Directory for authentication
+
+**Default Account Types (change passwords immediately):**
+- Super-Admin account
+- Admin account  
+- Tech account
+- Normal user account
+- Post-only account
+
+For security reasons, default passwords are not listed here. Consult GLPI's official documentation for initial access.
 
 ### 3. FusionInventory Plugin Installation
 

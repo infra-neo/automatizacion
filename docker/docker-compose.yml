@@ -239,7 +239,7 @@ services:
       - SEMAPHORE_ADMIN_PASSWORD=admin
       - SEMAPHORE_ADMIN_NAME=Admin User
       - SEMAPHORE_ADMIN_EMAIL=admin@localhost
-      - SEMAPHORE_ACCESS_KEY_ENCRYPTION=${SEMAPHORE_ACCESS_KEY:-gs72mfDGGwvZ4Am9t6vKEuRYmB98qS3z}
+      - SEMAPHORE_ACCESS_KEY_ENCRYPTION=${SEMAPHORE_ACCESS_KEY}  # REQUIRED: Generate with: openssl rand -base64 32
     depends_on:
       - postgres
     volumes:
