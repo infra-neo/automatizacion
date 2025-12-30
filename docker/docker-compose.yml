@@ -221,6 +221,82 @@ services:
     networks:
       - cicd-network
 
+  # Semaphore - Ansible UI and Automation
+  semaphore:
+    image: semaphoreui/semaphore:latest
+    container_name: semaphore
+    restart: unless-stopped
+    ports:
+      - "3001:3000"
+    environment:
+      - SEMAPHORE_DB_DIALECT=postgres
+      - SEMAPHORE_DB_HOST=postgres
+      - SEMAPHORE_DB_PORT=5432
+      - SEMAPHORE_DB_USER=semaphore
+      - SEMAPHORE_DB_PASS=semaphore
+      - SEMAPHORE_DB_NAME=semaphore
+      - SEMAPHORE_ADMIN=admin
+      - SEMAPHORE_ADMIN_PASSWORD=admin
+      - SEMAPHORE_ADMIN_NAME=Admin User
+      - SEMAPHORE_ADMIN_EMAIL=admin@localhost
+      - SEMAPHORE_ACCESS_KEY_ENCRYPTION=${SEMAPHORE_ACCESS_KEY}  # REQUIRED: Generate with: openssl rand -base64 32
+    depends_on:
+      - postgres
+    volumes:
+      - semaphore_data:/etc/semaphore
+      - ./ansible:/ansible:ro
+      - ./ansible-blueprints:/ansible-blueprints:ro
+    networks:
+      - cicd-network
+
+  # GLPI - IT Asset Management and Inventory
+  glpi:
+    image: diouxx/glpi:latest
+    container_name: glpi
+    restart: unless-stopped
+    ports:
+      - "8888:80"
+    environment:
+      - TIMEZONE=Europe/Madrid
+    depends_on:
+      - glpi-db
+    volumes:
+      - glpi_data:/var/www/html/glpi
+    networks:
+      - cicd-network
+
+  glpi-db:
+    image: mariadb:10.11
+    container_name: glpi-db
+    restart: unless-stopped
+    environment:
+      - MYSQL_ROOT_PASSWORD=glpi_root
+      - MYSQL_DATABASE=glpi
+      - MYSQL_USER=glpi
+      - MYSQL_PASSWORD=glpi
+    volumes:
+      - glpi_db_data:/var/lib/mysql
+    networks:
+      - cicd-network
+
+  # Wildfly - Java Application Server
+  wildfly:
+    image: quay.io/wildfly/wildfly:latest
+    container_name: wildfly
+    restart: unless-stopped
+    ports:
+      - "8090:8080"
+      - "9990:9990"
+    environment:
+      - WILDFLY_USER=admin
+      - WILDFLY_PASS=admin
+    volumes:
+      - wildfly_data:/opt/jboss/wildfly/standalone/deployments
+      - wildfly_logs:/opt/jboss/wildfly/standalone/log
+    command: /opt/jboss/wildfly/bin/standalone.sh -b 0.0.0.0 -bmanagement 0.0.0.0
+    networks:
+      - cicd-network
+
 volumes:
   jenkins_home:
     driver: local
@@ -251,6 +327,16 @@ volumes:
   redis_data:
     driver: local
   nginx_certs:
+    driver: local
+  semaphore_data:
+    driver: local
+  glpi_data:
+    driver: local
+  glpi_db_data:
+    driver: local
+  wildfly_data:
+    driver: local
+  wildfly_logs:
     driver: local
 
 networks:

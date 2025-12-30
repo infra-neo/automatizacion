@@ -1,0 +1,390 @@
+---
+# Ansible Playbook to configure logrotate for log management
+# Manages log rotation policies for system and application logs
+
+- name: Configure logrotate for log management
+  hosts: all
+  become: yes
+  vars:
+    logrotate_config_dir: "/etc/logrotate.d"
+    custom_log_paths:
+      - /var/log/application/*.log
+      - /var/log/wildfly/*.log
+      - /var/log/jenkins/*.log
+    rotation_days: "{{ log_rotation_days | default(7) }}"
+    rotation_count: "{{ log_rotation_count | default(4) }}"
+    max_log_size: "{{ max_size | default('100M') }}"
+    compress_logs: "{{ compress | default(true) }}"
+    
+  tasks:
+    - name: Install logrotate package
+      package:
+        name: logrotate
+        state: present
+      tags: install
+
+    - name: Ensure logrotate is installed
+      command: logrotate --version
+      register: logrotate_version
+      changed_when: false
+      tags: verify
+
+    - name: Display logrotate version
+      debug:
+        var: logrotate_version.stdout_lines
+      tags: verify
+
+    - name: Ensure logrotate configuration directory exists
+      file:
+        path: "{{ logrotate_config_dir }}"
+        state: directory
+        mode: '0755'
+      tags: config
+
+    - name: Configure main logrotate configuration
+      template:
+        src: templates/logrotate.conf.j2
+        dest: /etc/logrotate.conf
+        owner: root
+        group: root
+        mode: '0644'
+        backup: yes
+      tags: config
+
+    - name: Configure system logs rotation
+      copy:
+        content: |
+          /var/log/syslog
+          /var/log/messages
+          {
+              rotate {{ rotation_count }}
+              {{ 'daily' if rotation_days | int <= 1 else 'weekly' }}
+              missingok
+              notifempty
+              {% if compress_logs %}compress{% endif %}
+              delaycompress
+              sharedscripts
+              postrotate
+                  /usr/lib/rsyslog/rsyslog-rotate
+              endscript
+          }
+        dest: "{{ logrotate_config_dir }}/syslog"
+        owner: root
+        group: root
+        mode: '0644'
+      tags: config
+
+    - name: Configure application logs rotation
+      copy:
+        content: |
+          /var/log/application/*.log
+          {
+              rotate {{ rotation_count }}
+              size {{ max_log_size }}
+              missingok
+              notifempty
+              {% if compress_logs %}compress{% endif %}
+              delaycompress
+              create 0640 root root
+              sharedscripts
+              postrotate
+                  if [ -f /var/run/application.pid ]; then
+                      kill -USR1 $(cat /var/run/application.pid) 2>/dev/null || true
+                  fi
+              endscript
+          }
+        dest: "{{ logrotate_config_dir }}/application"
+        owner: root
+        group: root
+        mode: '0644'
+      tags: config
+
+    - name: Configure Wildfly/JBoss logs rotation
+      copy:
+        content: |
+          /var/log/wildfly/*.log
+          /opt/wildfly/standalone/log/*.log
+          {
+              rotate {{ rotation_count }}
+              size {{ max_log_size }}
+              missingok
+              notifempty
+              {% if compress_logs %}compress{% endif %}
+              delaycompress
+              copytruncate
+              create 0640 wildfly wildfly
+          }
+        dest: "{{ logrotate_config_dir }}/wildfly"
+        owner: root
+        group: root
+        mode: '0644'
+      when: configure_wildfly | default(true)
+      tags: config
+
+    - name: Configure Jenkins logs rotation
+      copy:
+        content: |
+          /var/log/jenkins/*.log
+          /var/log/jenkins/jenkins.log
+          {
+              rotate {{ rotation_count }}
+              size {{ max_log_size }}
+              missingok
+              notifempty
+              {% if compress_logs %}compress{% endif %}
+              delaycompress
+              copytruncate
+              create 0640 jenkins jenkins
+          }
+        dest: "{{ logrotate_config_dir }}/jenkins"
+        owner: root
+        group: root
+        mode: '0644'
+      when: configure_jenkins | default(true)
+      tags: config
+
+    - name: Configure Docker container logs rotation
+      copy:
+        content: |
+          /var/lib/docker/containers/*/*.log
+          {
+              rotate 7
+              daily
+              {% if compress_logs %}compress{% endif %}
+              size={{ max_log_size }}
+              missingok
+              delaycompress
+              copytruncate
+          }
+        dest: "{{ logrotate_config_dir }}/docker-containers"
+        owner: root
+        group: root
+        mode: '0644'
+      when: configure_docker_logs | default(true)
+      tags: config
+
+    - name: Configure custom application logs rotation
+      copy:
+        content: |
+          {{ item }}
+          {
+              rotate {{ rotation_count }}
+              size {{ max_log_size }}
+              missingok
+              notifempty
+              {% if compress_logs %}compress{% endif %}
+              delaycompress
+              create 0640 root root
+          }
+        dest: "{{ logrotate_config_dir }}/custom-{{ item | basename | regex_replace('[^a-zA-Z0-9]', '-') }}"
+        owner: root
+        group: root
+        mode: '0644'
+      loop: "{{ additional_log_paths | default([]) }}"
+      when: additional_log_paths is defined and additional_log_paths | length > 0
+      tags: config
+
+    - name: Create log directories if they don't exist
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - /var/log/application
+        - /var/log/wildfly
+        - /var/log/jenkins
+      tags: setup
+
+    - name: Configure logrotate to run via cron
+      cron:
+        name: "logrotate"
+        minute: "0"
+        hour: "0"
+        job: "/usr/sbin/logrotate /etc/logrotate.conf"
+        user: root
+      tags: cron
+
+    - name: Set up logrotate status file
+      file:
+        path: /var/lib/logrotate
+        state: directory
+        mode: '0755'
+      tags: setup
+
+    - name: Configure logrotate state file
+      copy:
+        content: |
+          # logrotate state file - automatically updated
+          # DO NOT EDIT THIS FILE MANUALLY
+        dest: /var/lib/logrotate/status
+        owner: root
+        group: root
+        mode: '0644'
+        force: no
+      tags: setup
+
+    - name: Create logrotate log directory
+      file:
+        path: /var/log/logrotate
+        state: directory
+        mode: '0755'
+      tags: setup
+
+    - name: Configure logrotate to log its operations
+      lineinfile:
+        path: /etc/cron.daily/logrotate
+        line: '/usr/sbin/logrotate /etc/logrotate.conf >> /var/log/logrotate/logrotate.log 2>&1'
+        create: yes
+        mode: '0755'
+      tags: config
+
+    - name: Test logrotate configuration (dry run)
+      command: logrotate -d /etc/logrotate.conf
+      register: logrotate_test
+      changed_when: false
+      failed_when: false
+      tags: test
+
+    - name: Display logrotate test output
+      debug:
+        var: logrotate_test.stdout_lines
+      when: logrotate_test.rc == 0
+      tags: test
+
+    - name: Verify logrotate configuration syntax
+      command: logrotate --debug /etc/logrotate.conf
+      register: logrotate_debug
+      changed_when: false
+      failed_when: logrotate_debug.rc != 0
+      tags: validate
+
+    - name: Check existing rotated logs
+      find:
+        paths: /var/log
+        patterns: "*.gz,*.1,*.2,*.3,*.4"
+        recurse: yes
+      register: rotated_logs
+      tags: check
+
+    - name: Display count of rotated logs
+      debug:
+        msg: "Found {{ rotated_logs.matched }} rotated log files"
+      tags: check
+
+    - name: Create documentation file
+      copy:
+        content: |
+          # Logrotate Configuration Documentation
+          
+          ## Configured Log Rotations
+          
+          ### System Logs
+          - Location: /var/log/syslog, /var/log/messages
+          - Rotation: {{ 'Daily' if rotation_days | int <= 1 else 'Weekly' }}
+          - Keep: {{ rotation_count }} rotations
+          - Compression: {{ 'Enabled' if compress_logs else 'Disabled' }}
+          
+          ### Application Logs
+          - Location: /var/log/application/*.log
+          - Max Size: {{ max_log_size }}
+          - Keep: {{ rotation_count }} rotations
+          - Compression: {{ 'Enabled' if compress_logs else 'Disabled' }}
+          
+          ### Wildfly Logs
+          - Location: /var/log/wildfly/*.log, /opt/wildfly/standalone/log/*.log
+          - Max Size: {{ max_log_size }}
+          - Keep: {{ rotation_count }} rotations
+          
+          ### Jenkins Logs
+          - Location: /var/log/jenkins/*.log
+          - Max Size: {{ max_log_size }}
+          - Keep: {{ rotation_count }} rotations
+          
+          ### Docker Container Logs
+          - Location: /var/lib/docker/containers/*/*.log
+          - Rotation: Daily
+          - Max Size: {{ max_log_size }}
+          
+          ## Manual Execution
+          ```bash
+          # Test configuration (dry run)
+          logrotate -d /etc/logrotate.conf
+          
+          # Force rotation
+          logrotate -f /etc/logrotate.conf
+          
+          # Verbose output
+          logrotate -v /etc/logrotate.conf
+          ```
+          
+          ## Cron Schedule
+          Logrotate runs daily at midnight via cron
+          
+          ## Status File
+          Location: /var/lib/logrotate/status
+          
+        dest: /etc/logrotate.d/README.md
+        owner: root
+        group: root
+        mode: '0644'
+      tags: docs
+
+    - name: Generate configuration report
+      copy:
+        content: |
+          ====================================
+          LOGROTATE CONFIGURATION REPORT
+          ====================================
+          Host: {{ ansible_hostname }}
+          Date: {{ ansible_date_time.iso8601 }}
+          
+          === LOGROTATE VERSION ===
+          {{ logrotate_version.stdout }}
+          
+          === CONFIGURATION SETTINGS ===
+          Rotation Days: {{ rotation_days }}
+          Rotation Count: {{ rotation_count }}
+          Max Log Size: {{ max_log_size }}
+          Compression: {{ 'Enabled' if compress_logs else 'Disabled' }}
+          
+          === CONFIGURED LOG FILES ===
+          - System logs (syslog, messages)
+          - Application logs (/var/log/application/*.log)
+          {% if configure_wildfly | default(true) %}- Wildfly logs (/var/log/wildfly/*.log){% endif %}
+          {% if configure_jenkins | default(true) %}- Jenkins logs (/var/log/jenkins/*.log){% endif %}
+          {% if configure_docker_logs | default(true) %}- Docker container logs{% endif %}
+          
+          === EXISTING ROTATED LOGS ===
+          Total rotated files: {{ rotated_logs.matched }}
+          
+          === CONFIGURATION TEST ===
+          Status: {{ 'PASSED' if logrotate_test.rc == 0 else 'FAILED' }}
+          
+          ====================================
+        dest: /tmp/logrotate-config-{{ ansible_hostname }}.txt
+        mode: '0644'
+      tags: report
+
+    - name: Fetch configuration report
+      fetch:
+        src: /tmp/logrotate-config-{{ ansible_hostname }}.txt
+        dest: "./reports/logrotate-config-{{ ansible_hostname }}-{{ ansible_date_time.date }}.txt"
+        flat: yes
+      tags: report
+
+    - name: Display configuration summary
+      debug:
+        msg:
+          - "======================================"
+          - "LOGROTATE CONFIGURATION SUMMARY"
+          - "======================================"
+          - "Host: {{ ansible_hostname }}"
+          - "Logrotate Version: {{ logrotate_version.stdout | regex_replace('\\n.*', '') }}"
+          - "Configuration Valid: {{ 'YES' if logrotate_debug.rc == 0 else 'NO' }}"
+          - "Rotation Period: {{ 'Daily' if rotation_days | int <= 1 else 'Weekly' }}"
+          - "Rotations to Keep: {{ rotation_count }}"
+          - "Max Size: {{ max_log_size }}"
+          - "Compression: {{ 'Enabled' if compress_logs else 'Disabled' }}"
+          - "Existing Rotated Files: {{ rotated_logs.matched }}"
+          - "======================================"
+      tags: summary

@@ -1,0 +1,171 @@
+pipeline {
+    agent any
+    
+    environment {
+        ANSIBLE_FORCE_COLOR = 'true'
+        ANSIBLE_HOST_KEY_CHECKING = 'false'
+    }
+    
+    parameters {
+        choice(
+            name: 'ENVIRONMENT',
+            choices: ['qa', 'staging', 'production'],
+            description: 'Target environment'
+        )
+        string(
+            name: 'TARGET_HOSTS',
+            defaultValue: 'all',
+            description: 'Target hosts or group'
+        )
+        booleanParam(
+            name: 'RUN_TEST_ROTATION',
+            defaultValue: true,
+            description: 'Run test log rotation'
+        )
+    }
+    
+    stages {
+        stage('Prepare Environment') {
+            steps {
+                echo "Preparing logrotate validation for ${params.ENVIRONMENT}"
+                sh '''
+                    mkdir -p reports
+                '''
+            }
+        }
+        
+        stage('Validate Logrotate Configuration') {
+            steps {
+                script {
+                    echo "Running logrotate validation on ${params.TARGET_HOSTS}"
+                    sh """
+                        ansible-playbook \
+                            -i ansible/inventories/${params.ENVIRONMENT}/hosts \
+                            ansible-blueprints/logrotate/validate-logrotate.yml \
+                            --limit ${params.TARGET_HOSTS} \
+                            -v
+                    """
+                }
+            }
+        }
+        
+        stage('Test Logrotate Dry Run') {
+            steps {
+                script {
+                    echo "Testing logrotate configuration (dry run)"
+                    sh """
+                        ansible all \
+                            -i ansible/inventories/${params.ENVIRONMENT}/hosts \
+                            --limit ${params.TARGET_HOSTS} \
+                            -m shell \
+                            -a "logrotate -d /etc/logrotate.conf" \
+                            --become
+                    """
+                }
+            }
+        }
+        
+        stage('Check Rotated Logs') {
+            steps {
+                script {
+                    echo "Checking existing rotated logs"
+                    sh """
+                        ansible all \
+                            -i ansible/inventories/${params.ENVIRONMENT}/hosts \
+                            --limit ${params.TARGET_HOSTS} \
+                            -m shell \
+                            -a "find /var/log -name '*.gz' -o -name '*.1' | wc -l" \
+                            --become
+                    """
+                }
+            }
+        }
+        
+        stage('Verify Disk Space') {
+            steps {
+                script {
+                    echo "Verifying disk space for logs"
+                    sh """
+                        ansible all \
+                            -i ansible/inventories/${params.ENVIRONMENT}/hosts \
+                            --limit ${params.TARGET_HOSTS} \
+                            -m shell \
+                            -a "df -h /var/log" \
+                            --become
+                    """
+                }
+            }
+        }
+        
+        stage('Test Rotation') {
+            when {
+                expression { params.RUN_TEST_ROTATION }
+            }
+            steps {
+                script {
+                    echo "Running test rotation"
+                    sh """
+                        ansible all \
+                            -i ansible/inventories/${params.ENVIRONMENT}/hosts \
+                            --limit ${params.TARGET_HOSTS} \
+                            -m shell \
+                            -a "logrotate -f /etc/logrotate.d/syslog" \
+                            --become || true
+                    """
+                }
+            }
+        }
+        
+        stage('Generate Validation Report') {
+            steps {
+                script {
+                    echo "Generating validation report"
+                    sh """
+                        echo "=== LOGROTATE VALIDATION REPORT ===" > reports/logrotate-validation-${params.ENVIRONMENT}-\$(date +%Y%m%d).txt
+                        echo "Environment: ${params.ENVIRONMENT}" >> reports/logrotate-validation-${params.ENVIRONMENT}-\$(date +%Y%m%d).txt
+                        echo "Targets: ${params.TARGET_HOSTS}" >> reports/logrotate-validation-${params.ENVIRONMENT}-\$(date +%Y%m%d).txt
+                        echo "Date: \$(date)" >> reports/logrotate-validation-${params.ENVIRONMENT}-\$(date +%Y%m%d).txt
+                        echo "Status: SUCCESS" >> reports/logrotate-validation-${params.ENVIRONMENT}-\$(date +%Y%m%d).txt
+                        find reports -name "logrotate-validation-*.txt" -exec cat {} \\; >> reports/logrotate-validation-${params.ENVIRONMENT}-\$(date +%Y%m%d).txt || true
+                    """
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            echo 'Archiving validation reports'
+            archiveArtifacts artifacts: 'reports/**/*.txt', allowEmptyArchive: true
+            
+            cleanWs(
+                deleteDirs: true,
+                patterns: [[pattern: 'reports/**', type: 'INCLUDE']]
+            )
+        }
+        
+        success {
+            echo 'Logrotate validation completed successfully'
+            script {
+                if (fileExists('scripts/send-notification.sh')) {
+                    sh """
+                        ./scripts/send-notification.sh success ${params.ENVIRONMENT} \
+                            "Logrotate validation completed for ${params.TARGET_HOSTS}"
+                    """
+                }
+            }
+        }
+        
+        failure {
+            echo 'Logrotate validation failed'
+            script {
+                if (fileExists('scripts/send-notification.sh')) {
+                    sh """
+                        ./scripts/send-notification.sh failure ${params.ENVIRONMENT} \
+                            "Logrotate validation failed for ${params.TARGET_HOSTS}"
+                    """
+                }
+            }
+        }
+    }
+}

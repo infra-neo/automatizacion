@@ -1,0 +1,403 @@
+---
+# Ansible Playbook to configure Zabbix agent for inventory discovery and monitoring
+# Ensures Zabbix agent is installed, configured, and reporting to Zabbix server
+
+- name: Configure Zabbix Agent for inventory discovery and monitoring
+  hosts: all
+  become: yes
+  vars:
+    zabbix_server: "{{ zabbix_server_ip | default('zabbix.company.com') }}"
+    zabbix_server_port: "{{ server_port | default('10051') }}"
+    zabbix_agent_port: "{{ agent_port | default('10050') }}"
+    zabbix_agent_version: "{{ agent_version | default('6.0') }}"
+    zabbix_hostname: "{{ inventory_hostname }}"
+    agent_timeout: "{{ timeout | default('3') }}"
+    enable_remote_commands: "{{ remote_commands | default('0') }}"
+    
+  tasks:
+    - name: Add Zabbix repository (Debian/Ubuntu)
+      apt:
+        deb: "https://repo.zabbix.com/zabbix/{{ zabbix_agent_version }}/{{ ansible_distribution | lower }}/pool/main/z/zabbix-release/zabbix-release_{{ zabbix_agent_version }}-1+{{ ansible_distribution_release }}_all.deb"
+      when: ansible_os_family == "Debian"
+      tags: install
+
+    - name: Import Zabbix GPG key (RHEL/CentOS)
+      rpm_key:
+        state: present
+        key: https://repo.zabbix.com/RPM-GPG-KEY-ZABBIX-A14FE591
+      when: ansible_os_family == "RedHat"
+      tags: install
+
+    - name: Add Zabbix repository (RHEL/CentOS 8+)
+      yum:
+        name: "https://repo.zabbix.com/zabbix/{{ zabbix_agent_version }}/rhel/{{ ansible_distribution_major_version }}/x86_64/zabbix-release-{{ zabbix_agent_version }}-1.el{{ ansible_distribution_major_version }}.noarch.rpm"
+        state: present
+        disable_gpg_check: no
+      when: ansible_os_family == "RedHat" and ansible_distribution_major_version | int >= 8
+      tags: install
+
+    - name: Add Zabbix repository (RHEL/CentOS 7)
+      yum:
+        name: "https://repo.zabbix.com/zabbix/{{ zabbix_agent_version }}/rhel/7/x86_64/zabbix-release-{{ zabbix_agent_version }}-1.el7.noarch.rpm"
+        state: present
+        disable_gpg_check: no
+      when: ansible_os_family == "RedHat" and ansible_distribution_major_version == "7"
+      tags: install
+
+    - name: Install Zabbix agent (Debian/Ubuntu)
+      apt:
+        name: zabbix-agent
+        state: present
+        update_cache: yes
+      when: ansible_os_family == "Debian"
+      tags: install
+
+    - name: Install Zabbix agent (RHEL/CentOS)
+      yum:
+        name: zabbix-agent
+        state: present
+      when: ansible_os_family == "RedHat"
+      tags: install
+
+    - name: Backup original configuration
+      copy:
+        src: /etc/zabbix/zabbix_agentd.conf
+        dest: /etc/zabbix/zabbix_agentd.conf.backup
+        remote_src: yes
+        force: no
+      tags: config
+
+    - name: Configure Zabbix server address
+      lineinfile:
+        path: /etc/zabbix/zabbix_agentd.conf
+        regexp: '^Server='
+        line: "Server={{ zabbix_server }}"
+        backup: yes
+      notify: restart zabbix-agent
+      tags: config
+
+    - name: Configure Zabbix server active checks
+      lineinfile:
+        path: /etc/zabbix/zabbix_agentd.conf
+        regexp: '^ServerActive='
+        line: "ServerActive={{ zabbix_server }}:{{ zabbix_server_port }}"
+      notify: restart zabbix-agent
+      tags: config
+
+    - name: Configure agent hostname
+      lineinfile:
+        path: /etc/zabbix/zabbix_agentd.conf
+        regexp: '^Hostname='
+        line: "Hostname={{ zabbix_hostname }}"
+      notify: restart zabbix-agent
+      tags: config
+
+    - name: Configure agent listen port
+      lineinfile:
+        path: /etc/zabbix/zabbix_agentd.conf
+        regexp: '^ListenPort='
+        line: "ListenPort={{ zabbix_agent_port }}"
+      notify: restart zabbix-agent
+      tags: config
+
+    - name: Configure agent timeout
+      lineinfile:
+        path: /etc/zabbix/zabbix_agentd.conf
+        regexp: '^Timeout='
+        line: "Timeout={{ agent_timeout }}"
+      notify: restart zabbix-agent
+      tags: config
+
+    - name: Configure remote commands (if enabled)
+      lineinfile:
+        path: /etc/zabbix/zabbix_agentd.conf
+        regexp: '^EnableRemoteCommands='
+        line: "EnableRemoteCommands={{ enable_remote_commands }}"
+      notify: restart zabbix-agent
+      tags: config
+
+    - name: Configure user parameters for custom metrics
+      blockinfile:
+        path: /etc/zabbix/zabbix_agentd.conf
+        marker: "# {mark} ANSIBLE MANAGED CUSTOM PARAMETERS"
+        block: |
+          # Custom user parameters
+          UserParameter=custom.ping,echo 1
+          UserParameter=custom.disk.discovery,/usr/local/bin/disk_discovery.sh
+          UserParameter=custom.service.status[*],systemctl is-active $1
+          UserParameter=custom.app.status,pgrep -c java
+      notify: restart zabbix-agent
+      tags: config
+
+    - name: Create custom scripts directory
+      file:
+        path: /usr/local/bin/zabbix-scripts
+        state: directory
+        mode: '0755'
+      tags: setup
+
+    - name: Create disk discovery script
+      copy:
+        content: |
+          #!/bin/bash
+          # Disk discovery script for Zabbix
+          echo '{'
+          echo '  "data":['
+          first=1
+          df -h | tail -n +2 | while read line; do
+            mount=$(echo $line | awk '{print $6}')
+            device=$(echo $line | awk '{print $1}')
+            if [ $first -eq 0 ]; then
+              echo ','
+            fi
+            first=0
+            echo -n "    {\"{#MOUNTPOINT}\":\"$mount\",\"{#DEVICE}\":\"$device\"}"
+          done
+          echo
+          echo '  ]'
+          echo '}'
+        dest: /usr/local/bin/disk_discovery.sh
+        mode: '0755'
+      tags: setup
+
+    - name: Configure firewall for Zabbix agent (RHEL/CentOS)
+      firewalld:
+        port: "{{ zabbix_agent_port }}/tcp"
+        permanent: yes
+        state: enabled
+        immediate: yes
+      when: ansible_os_family == "RedHat"
+      tags: firewall
+
+    - name: Configure UFW firewall for Zabbix agent (Debian/Ubuntu)
+      ufw:
+        rule: allow
+        port: "{{ zabbix_agent_port }}"
+        proto: tcp
+      when: ansible_os_family == "Debian"
+      tags: firewall
+
+    - name: Configure SELinux for Zabbix agent (RHEL/CentOS)
+      seboolean:
+        name: zabbix_can_network
+        state: yes
+        persistent: yes
+      when: ansible_os_family == "RedHat" and ansible_selinux.status == "enabled"
+      tags: selinux
+
+    - name: Ensure Zabbix agent service is enabled and started
+      service:
+        name: zabbix-agent
+        state: started
+        enabled: yes
+      tags: service
+
+    - name: Wait for agent to start
+      wait_for:
+        port: "{{ zabbix_agent_port }}"
+        delay: 2
+        timeout: 30
+      tags: service
+
+    - name: Check Zabbix agent status
+      command: systemctl status zabbix-agent
+      register: agent_status
+      changed_when: false
+      failed_when: false
+      tags: verify
+
+    - name: Display Zabbix agent status
+      debug:
+        var: agent_status.stdout_lines
+      tags: verify
+
+    - name: Get Zabbix agent version
+      shell: zabbix_agentd -V | head -1
+      register: agent_version_output
+      changed_when: false
+      tags: verify
+
+    - name: Display Zabbix agent version
+      debug:
+        msg: "{{ agent_version_output.stdout }}"
+      tags: verify
+
+    - name: Test agent connectivity to server
+      command: zabbix_agentd -t agent.ping
+      register: connectivity_test
+      changed_when: false
+      failed_when: false
+      tags: verify
+
+    - name: Display connectivity test result
+      debug:
+        var: connectivity_test.stdout_lines
+      tags: verify
+
+    - name: Test custom user parameters
+      command: zabbix_agentd -t custom.ping
+      register: custom_param_test
+      changed_when: false
+      failed_when: false
+      tags: verify
+
+    - name: Display custom parameter test
+      debug:
+        var: custom_param_test.stdout_lines
+      tags: verify
+
+    - name: Check agent configuration validity
+      command: zabbix_agentd -T
+      register: config_test
+      changed_when: false
+      failed_when: config_test.rc != 0
+      tags: validate
+
+    - name: Display configuration test result
+      debug:
+        msg: "Configuration validation: {{ 'PASSED' if config_test.rc == 0 else 'FAILED' }}"
+      tags: validate
+
+    - name: Check agent logs for errors
+      shell: tail -50 /var/log/zabbix/zabbix_agentd.log | grep -i error || echo "No errors found"
+      register: agent_logs
+      changed_when: false
+      failed_when: false
+      tags: verify
+
+    - name: Display agent logs
+      debug:
+        var: agent_logs.stdout_lines
+      tags: verify
+
+    - name: Verify agent is listening
+      shell: ss -tlnp | grep {{ zabbix_agent_port }} || netstat -tlnp | grep {{ zabbix_agent_port }}
+      register: listening_check
+      changed_when: false
+      failed_when: false
+      tags: verify
+
+    - name: Display listening status
+      debug:
+        var: listening_check.stdout_lines
+      tags: verify
+
+    - name: Check connectivity to Zabbix server
+      wait_for:
+        host: "{{ zabbix_server }}"
+        port: "{{ zabbix_server_port }}"
+        timeout: 10
+      register: server_connectivity
+      failed_when: false
+      tags: verify
+
+    - name: Display server connectivity
+      debug:
+        msg: "Zabbix server {{ zabbix_server }}:{{ zabbix_server_port }} is {{ 'reachable' if server_connectivity.failed == false else 'unreachable' }}"
+      tags: verify
+
+    - name: Create agent monitoring script
+      copy:
+        content: |
+          #!/bin/bash
+          # Zabbix agent health check script
+          
+          echo "=== Zabbix Agent Health Check ==="
+          echo "Date: $(date)"
+          echo
+          
+          # Check service status
+          echo "Service Status:"
+          systemctl is-active zabbix-agent && echo "  ✓ Service is running" || echo "  ✗ Service is not running"
+          
+          # Check if listening
+          echo
+          echo "Network Status:"
+          ss -tlnp | grep {{ zabbix_agent_port }} > /dev/null && echo "  ✓ Agent is listening on port {{ zabbix_agent_port }}" || echo "  ✗ Agent is not listening"
+          
+          # Check connectivity
+          echo
+          echo "Connectivity Test:"
+          zabbix_agentd -t agent.ping > /dev/null 2>&1 && echo "  ✓ Agent responds to ping" || echo "  ✗ Agent does not respond"
+          
+          # Check logs
+          echo
+          echo "Recent Errors:"
+          tail -20 /var/log/zabbix/zabbix_agentd.log | grep -i error | tail -5 || echo "  No recent errors"
+        dest: /usr/local/bin/zabbix-health-check.sh
+        mode: '0755'
+      tags: setup
+
+    - name: Generate configuration report
+      copy:
+        content: |
+          ====================================
+          ZABBIX AGENT CONFIGURATION REPORT
+          ====================================
+          Host: {{ ansible_hostname }}
+          Date: {{ ansible_date_time.iso8601 }}
+          
+          === AGENT VERSION ===
+          {{ agent_version_output.stdout }}
+          
+          === CONFIGURATION ===
+          Zabbix Server: {{ zabbix_server }}
+          Server Port: {{ zabbix_server_port }}
+          Agent Port: {{ zabbix_agent_port }}
+          Agent Hostname: {{ zabbix_hostname }}
+          Timeout: {{ agent_timeout }}s
+          Remote Commands: {{ 'Enabled' if enable_remote_commands == '1' else 'Disabled' }}
+          
+          === SERVICE STATUS ===
+          {{ agent_status.stdout }}
+          
+          === CONNECTIVITY ===
+          Agent Ping: {{ connectivity_test.stdout }}
+          Server Reachable: {{ 'YES' if server_connectivity.failed == false else 'NO' }}
+          
+          === VALIDATION ===
+          Configuration Test: {{ 'PASSED' if config_test.rc == 0 else 'FAILED' }}
+          Listening on Port: {{ 'YES' if listening_check.rc == 0 else 'NO' }}
+          
+          === CUSTOM PARAMETERS ===
+          Custom Ping Test: {{ custom_param_test.stdout }}
+          
+          ====================================
+        dest: /tmp/zabbix-agent-config-{{ ansible_hostname }}.txt
+        mode: '0644'
+      tags: report
+
+    - name: Fetch configuration report
+      fetch:
+        src: /tmp/zabbix-agent-config-{{ ansible_hostname }}.txt
+        dest: "./reports/zabbix-agent-{{ ansible_hostname }}-{{ ansible_date_time.date }}.txt"
+        flat: yes
+      tags: report
+
+    - name: Display configuration summary
+      debug:
+        msg:
+          - "======================================"
+          - "ZABBIX AGENT CONFIGURATION SUMMARY"
+          - "======================================"
+          - "Host: {{ ansible_hostname }}"
+          - "Agent Version: {{ agent_version_output.stdout }}"
+          - "Service Running: YES"
+          - "Service Enabled: YES"
+          - "Configuration Valid: {{ 'YES' if config_test.rc == 0 else 'NO' }}"
+          - "Server: {{ zabbix_server }}:{{ zabbix_server_port }}"
+          - "Agent Port: {{ zabbix_agent_port }}"
+          - "Server Connectivity: {{ 'OK' if server_connectivity.failed == false else 'FAILED' }}"
+          - "======================================"
+      tags: summary
+
+  handlers:
+    - name: restart zabbix-agent
+      service:
+        name: zabbix-agent
+        state: restarted
+
+    - name: reload zabbix-agent
+      service:
+        name: zabbix-agent
+        state: reloaded

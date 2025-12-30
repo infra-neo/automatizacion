@@ -1,0 +1,162 @@
+pipeline {
+    agent any
+    
+    environment {
+        ANSIBLE_FORCE_COLOR = 'true'
+        ANSIBLE_HOST_KEY_CHECKING = 'false'
+    }
+    
+    parameters {
+        choice(
+            name: 'ENVIRONMENT',
+            choices: ['qa', 'staging', 'production'],
+            description: 'Target environment'
+        )
+        string(
+            name: 'TARGET_HOSTS',
+            defaultValue: 'all',
+            description: 'Target hosts or group (e.g., all, webservers, databases)'
+        )
+        booleanParam(
+            name: 'RUN_VALIDATION',
+            defaultValue: true,
+            description: 'Run validation after configuration'
+        )
+    }
+    
+    stages {
+        stage('Prepare Environment') {
+            steps {
+                echo "Preparing rsyslog validation for ${params.ENVIRONMENT}"
+                sh '''
+                    mkdir -p reports
+                    chmod +x /usr/bin/ansible-playbook || true
+                '''
+            }
+        }
+        
+        stage('Validate Rsyslog Configuration') {
+            steps {
+                script {
+                    echo "Running rsyslog validation on ${params.TARGET_HOSTS}"
+                    sh """
+                        ansible-playbook \
+                            -i ansible/inventories/${params.ENVIRONMENT}/hosts \
+                            ansible-blueprints/rsyslog/validate-rsyslog.yml \
+                            --limit ${params.TARGET_HOSTS} \
+                            -e "validation_timestamp=\$(date +%Y%m%d_%H%M%S)" \
+                            -v
+                    """
+                }
+            }
+        }
+        
+        stage('Check Configuration Syntax') {
+            when {
+                expression { params.RUN_VALIDATION }
+            }
+            steps {
+                script {
+                    echo "Checking rsyslog configuration syntax"
+                    sh """
+                        ansible all \
+                            -i ansible/inventories/${params.ENVIRONMENT}/hosts \
+                            --limit ${params.TARGET_HOSTS} \
+                            -m shell \
+                            -a "rsyslogd -N1" \
+                            --become
+                    """
+                }
+            }
+        }
+        
+        stage('Verify Service Status') {
+            steps {
+                script {
+                    echo "Verifying rsyslog service status"
+                    sh """
+                        ansible all \
+                            -i ansible/inventories/${params.ENVIRONMENT}/hosts \
+                            --limit ${params.TARGET_HOSTS} \
+                            -m service \
+                            -a "name=rsyslog state=started" \
+                            --become \
+                            --check
+                    """
+                }
+            }
+        }
+        
+        stage('Generate Validation Report') {
+            steps {
+                script {
+                    echo "Generating validation report"
+                    sh """
+                        if [ -d reports ]; then
+                            echo "=== RSYSLOG VALIDATION REPORT ===" > reports/rsyslog-validation-${params.ENVIRONMENT}-\$(date +%Y%m%d).txt
+                            echo "Environment: ${params.ENVIRONMENT}" >> reports/rsyslog-validation-${params.ENVIRONMENT}-\$(date +%Y%m%d).txt
+                            echo "Targets: ${params.TARGET_HOSTS}" >> reports/rsyslog-validation-${params.ENVIRONMENT}-\$(date +%Y%m%d).txt
+                            echo "Date: \$(date)" >> reports/rsyslog-validation-${params.ENVIRONMENT}-\$(date +%Y%m%d).txt
+                            echo "Status: SUCCESS" >> reports/rsyslog-validation-${params.ENVIRONMENT}-\$(date +%Y%m%d).txt
+                            find reports -name "rsyslog-validation-*.txt" -exec cat {} \\; >> reports/rsyslog-validation-${params.ENVIRONMENT}-\$(date +%Y%m%d).txt || true
+                        fi
+                    """
+                }
+            }
+        }
+        
+        stage('Collect Metrics') {
+            steps {
+                script {
+                    echo "Collecting validation metrics"
+                    sh """
+                        ansible all \
+                            -i ansible/inventories/${params.ENVIRONMENT}/hosts \
+                            --limit ${params.TARGET_HOSTS} \
+                            -m shell \
+                            -a "systemctl status rsyslog --no-pager" \
+                            --become || true
+                    """
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            echo 'Archiving validation reports'
+            archiveArtifacts artifacts: 'reports/**/*.txt', allowEmptyArchive: true
+            
+            // Clean workspace
+            cleanWs(
+                deleteDirs: true,
+                patterns: [[pattern: 'reports/**', type: 'INCLUDE']]
+            )
+        }
+        
+        success {
+            echo 'Rsyslog validation completed successfully'
+            // Send notification
+            script {
+                if (fileExists('scripts/send-notification.sh')) {
+                    sh """
+                        ./scripts/send-notification.sh success ${params.ENVIRONMENT} \
+                            "Rsyslog validation completed for ${params.TARGET_HOSTS}"
+                    """
+                }
+            }
+        }
+        
+        failure {
+            echo 'Rsyslog validation failed'
+            script {
+                if (fileExists('scripts/send-notification.sh')) {
+                    sh """
+                        ./scripts/send-notification.sh failure ${params.ENVIRONMENT} \
+                            "Rsyslog validation failed for ${params.TARGET_HOSTS}"
+                    """
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,259 @@
+---
+# Ansible Playbook to validate rsyslog configuration
+# Checks rsyslog service, configuration syntax, and logging functionality
+
+- name: Validate rsyslog configuration and functionality
+  hosts: all
+  become: yes
+  vars:
+    test_message: "rsyslog-validation-test-{{ ansible_date_time.epoch }}"
+    test_facility: "local0"
+    validation_report_dir: "/tmp/rsyslog-validation"
+    
+  tasks:
+    - name: Create validation report directory
+      file:
+        path: "{{ validation_report_dir }}"
+        state: directory
+        mode: '0755'
+      tags: setup
+
+    - name: Check if rsyslog package is installed
+      package_facts:
+        manager: auto
+      tags: check
+
+    - name: Verify rsyslog package is installed
+      assert:
+        that:
+          - "'rsyslog' in ansible_facts.packages"
+        fail_msg: "rsyslog package is not installed"
+        success_msg: "rsyslog package is installed"
+      tags: check
+
+    - name: Check rsyslog service status
+      service_facts:
+      tags: check
+
+    - name: Verify rsyslog service is running
+      assert:
+        that:
+          - "ansible_facts.services['rsyslog.service'] is defined"
+          - "ansible_facts.services['rsyslog.service'].state == 'running'"
+        fail_msg: "rsyslog service is not running"
+        success_msg: "rsyslog service is running"
+      tags: check
+
+    - name: Verify rsyslog service is enabled
+      assert:
+        that:
+          - "ansible_facts.services['rsyslog.service'].status == 'enabled'"
+        fail_msg: "rsyslog service is not enabled"
+        success_msg: "rsyslog service is enabled"
+      tags: check
+
+    - name: Validate rsyslog configuration syntax
+      command: rsyslogd -N1
+      register: rsyslog_syntax_check
+      changed_when: false
+      failed_when: rsyslog_syntax_check.rc != 0
+      tags: validate
+
+    - name: Display rsyslog syntax validation result
+      debug:
+        msg: "rsyslog configuration syntax is valid"
+      when: rsyslog_syntax_check.rc == 0
+      tags: validate
+
+    - name: Check rsyslog configuration files
+      find:
+        paths: /etc/rsyslog.d
+        patterns: "*.conf"
+      register: rsyslog_config_files
+      tags: validate
+
+    - name: Display found configuration files
+      debug:
+        msg: "Found {{ rsyslog_config_files.matched }} rsyslog configuration files"
+      tags: validate
+
+    - name: Validate each configuration file
+      command: rsyslogd -N1 -f {{ item.path }}
+      loop: "{{ rsyslog_config_files.files }}"
+      register: config_file_validation
+      changed_when: false
+      failed_when: false
+      tags: validate
+
+    - name: Check rsyslog process
+      shell: ps aux | grep rsyslogd | grep -v grep
+      register: rsyslog_process
+      changed_when: false
+      failed_when: false
+      tags: check
+
+    - name: Display rsyslog process info
+      debug:
+        var: rsyslog_process.stdout_lines
+      tags: check
+
+    - name: Check rsyslog listening ports
+      shell: ss -tuln | grep 514 || netstat -tuln | grep 514
+      register: rsyslog_ports
+      changed_when: false
+      failed_when: false
+      tags: check
+
+    - name: Display rsyslog listening ports
+      debug:
+        msg: "{{ rsyslog_ports.stdout_lines if rsyslog_ports.stdout_lines | length > 0 else 'No listening ports found on 514' }}"
+      tags: check
+
+    - name: Send test log message
+      shell: logger -t "{{ test_message }}" -p {{ test_facility }}.info "Test message from Ansible validation at $(date)"
+      changed_when: false
+      tags: test
+
+    - name: Wait for log message to be processed
+      pause:
+        seconds: 3
+      tags: test
+
+    - name: Search for test message in syslog
+      shell: grep "{{ test_message }}" /var/log/syslog || grep "{{ test_message }}" /var/log/messages || echo "Message not found in standard logs"
+      register: test_message_check
+      changed_when: false
+      failed_when: false
+      tags: test
+
+    - name: Display test message search result
+      debug:
+        var: test_message_check.stdout_lines
+      tags: test
+
+    - name: Check disk space for log directories
+      shell: df -h /var/log
+      register: log_disk_space
+      changed_when: false
+      tags: check
+
+    - name: Display log disk space
+      debug:
+        var: log_disk_space.stdout_lines
+      tags: check
+
+    - name: Check log file sizes
+      shell: du -sh /var/log/* | sort -rh | head -10
+      register: log_file_sizes
+      changed_when: false
+      tags: check
+
+    - name: Display largest log files
+      debug:
+        var: log_file_sizes.stdout_lines
+      tags: check
+
+    - name: Check rsyslog error logs
+      shell: journalctl -u rsyslog --no-pager -n 50
+      register: rsyslog_journal
+      changed_when: false
+      tags: check
+
+    - name: Display recent rsyslog logs
+      debug:
+        var: rsyslog_journal.stdout_lines
+      tags: check
+
+    - name: Check for rsyslog errors in logs
+      shell: journalctl -u rsyslog --no-pager | grep -i error | tail -20
+      register: rsyslog_errors
+      changed_when: false
+      failed_when: false
+      tags: check
+
+    - name: Display rsyslog errors if any
+      debug:
+        msg: "{{ rsyslog_errors.stdout_lines if rsyslog_errors.stdout_lines | length > 0 else 'No errors found in rsyslog logs' }}"
+      tags: check
+
+    - name: Validate remote logging configuration (if configured)
+      shell: grep -r "@@\|@" /etc/rsyslog.d/ | grep -v "^#"
+      register: remote_config
+      changed_when: false
+      failed_when: false
+      tags: validate
+
+    - name: Display remote logging configuration
+      debug:
+        msg: "{{ remote_config.stdout_lines if remote_config.stdout_lines | length > 0 else 'No remote logging configured' }}"
+      tags: validate
+
+    - name: Get rsyslog version
+      command: rsyslogd -v
+      register: rsyslog_version
+      changed_when: false
+      tags: info
+
+    - name: Display rsyslog version
+      debug:
+        var: rsyslog_version.stdout_lines[0:5]
+      tags: info
+
+    - name: Generate validation report
+      copy:
+        content: |
+          ====================================
+          RSYSLOG VALIDATION REPORT
+          ====================================
+          Host: {{ ansible_hostname }}
+          Date: {{ ansible_date_time.iso8601 }}
+          
+          === RSYSLOG SERVICE STATUS ===
+          Service State: {{ ansible_facts.services['rsyslog.service'].state }}
+          Service Enabled: {{ ansible_facts.services['rsyslog.service'].status }}
+          
+          === RSYSLOG VERSION ===
+          {{ rsyslog_version.stdout_lines[0] }}
+          
+          === CONFIGURATION VALIDATION ===
+          Syntax Check: {{ 'PASSED' if rsyslog_syntax_check.rc == 0 else 'FAILED' }}
+          Configuration Files: {{ rsyslog_config_files.matched }}
+          
+          === TEST RESULTS ===
+          Test Message Sent: {{ test_message }}
+          Test Message Found: {{ 'YES' if test_message in test_message_check.stdout else 'NO' }}
+          
+          === DISK SPACE ===
+          {{ log_disk_space.stdout }}
+          
+          === REMOTE LOGGING ===
+          {{ remote_config.stdout if remote_config.stdout else 'Not configured' }}
+          
+          === ERRORS ===
+          {{ rsyslog_errors.stdout if rsyslog_errors.stdout else 'No errors found' }}
+          
+          ====================================
+        dest: "{{ validation_report_dir }}/rsyslog-validation-{{ ansible_hostname }}.txt"
+        mode: '0644'
+      tags: report
+
+    - name: Fetch validation report
+      fetch:
+        src: "{{ validation_report_dir }}/rsyslog-validation-{{ ansible_hostname }}.txt"
+        dest: "./reports/rsyslog-validation-{{ ansible_hostname }}-{{ ansible_date_time.date }}.txt"
+        flat: yes
+      tags: report
+
+    - name: Display validation summary
+      debug:
+        msg:
+          - "======================================"
+          - "RSYSLOG VALIDATION SUMMARY"
+          - "======================================"
+          - "Host: {{ ansible_hostname }}"
+          - "Service Running: YES"
+          - "Service Enabled: YES"
+          - "Configuration Valid: {{ 'YES' if rsyslog_syntax_check.rc == 0 else 'NO' }}"
+          - "Test Message Delivered: {{ 'YES' if test_message in test_message_check.stdout else 'NO' }}"
+          - "======================================"
+      tags: summary

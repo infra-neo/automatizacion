@@ -1,7 +1,7 @@
 {
   "version": "v1.0",
   "name": "Automation System Blueprint",
-  "description": "CI/CD pipeline for deploying and running the automation system.",
+  "description": "CI/CD pipeline for deploying and running the automation system with rsyslog, logrotate, and inventory management.",
   "blocks": [
     {
       "name": "Deploy Automation",
@@ -41,7 +41,120 @@
           }
         ]
       }
+    },
+    {
+      "name": "Configure Rsyslog",
+      "task": {
+        "jobs": [
+          {
+            "name": "Configure Rsyslog on All Hosts",
+            "commands": [
+              "ansible-playbook -i ansible/inventories/production/hosts ansible-blueprints/rsyslog/configure-rsyslog.yml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "Validate Rsyslog",
+      "task": {
+        "jobs": [
+          {
+            "name": "Validate Rsyslog Configuration",
+            "commands": [
+              "ansible-playbook -i ansible/inventories/production/hosts ansible-blueprints/rsyslog/validate-rsyslog.yml",
+              "echo 'Rsyslog validation completed. Check reports/ directory for detailed results.'"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "Configure Logrotate",
+      "task": {
+        "jobs": [
+          {
+            "name": "Configure Logrotate on All Hosts",
+            "commands": [
+              "ansible-playbook -i ansible/inventories/production/hosts ansible-blueprints/logrotate/configure-logrotate.yml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "Validate Logrotate",
+      "task": {
+        "jobs": [
+          {
+            "name": "Validate Logrotate Configuration",
+            "commands": [
+              "ansible-playbook -i ansible/inventories/production/hosts ansible-blueprints/logrotate/validate-logrotate.yml",
+              "echo 'Logrotate validation completed. Check reports/ directory for detailed results.'"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "Configure GLPI Agent",
+      "task": {
+        "jobs": [
+          {
+            "name": "Setup GLPI Agent for Inventory",
+            "commands": [
+              "ansible-playbook -i ansible/inventories/production/hosts ansible-blueprints/glpi-agent/configure-glpi-agent.yml -e 'glpi_server=http://glpi:8888'"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "Configure Zabbix Agent",
+      "task": {
+        "jobs": [
+          {
+            "name": "Setup Zabbix Agent for Monitoring",
+            "commands": [
+              "ansible-playbook -i ansible/inventories/production/hosts ansible-blueprints/zabbix/configure-zabbix-agent.yml -e 'zabbix_server=zabbix.company.com'"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "Full System Configuration",
+      "task": {
+        "jobs": [
+          {
+            "name": "Configure All Services",
+            "commands": [
+              "echo 'Starting full system configuration...'",
+              "ansible-playbook -i ansible/inventories/production/hosts ansible-blueprints/rsyslog/configure-rsyslog.yml",
+              "ansible-playbook -i ansible/inventories/production/hosts ansible-blueprints/logrotate/configure-logrotate.yml",
+              "ansible-playbook -i ansible/inventories/production/hosts ansible-blueprints/glpi-agent/configure-glpi-agent.yml",
+              "echo 'Full system configuration completed.'"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "Full System Validation",
+      "task": {
+        "jobs": [
+          {
+            "name": "Validate All Configurations",
+            "commands": [
+              "echo 'Starting full system validation...'",
+              "ansible-playbook -i ansible/inventories/production/hosts ansible-blueprints/rsyslog/validate-rsyslog.yml",
+              "ansible-playbook -i ansible/inventories/production/hosts ansible-blueprints/logrotate/validate-logrotate.yml",
+              "echo 'Full system validation completed. Check reports/ directory for results.'"
+            ]
+          }
+        ]
+      }
     }
   ],
-  "env_vars_instructions": "Configure the following environment variables in Semaphore: API_URL, API_CLIENT_ID, API_CLIENT_SECRET, SFTP_HOST, SFTP_USER, SFTP_PRIVATE_KEY, EMAIL_TO, EMAIL_FROM, EMAIL_SMTP, EMAIL_USER, EMAIL_PASSWORD."
+  "env_vars_instructions": "Configure the following environment variables in Semaphore using the encrypted Key Store (DO NOT use plain environment variables for sensitive data): API_URL, API_CLIENT_ID (Key Store), API_CLIENT_SECRET (Key Store), SFTP_HOST, SFTP_USER, SFTP_PRIVATE_KEY (Key Store - SSH type), EMAIL_TO, EMAIL_FROM, EMAIL_SMTP, EMAIL_USER (Key Store), EMAIL_PASSWORD (Key Store), GLPI_SERVER, ZABBIX_SERVER. All credentials marked with (Key Store) should be stored in Semaphore's encrypted Key Store."
 }
