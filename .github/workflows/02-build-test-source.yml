@@ -35,7 +35,6 @@ jobs:
         with:
           java-version: ${{ env.JAVA_VERSION }}
           distribution: 'temurin'
-          cache: 'maven'
       
       - name: Verify Java version
         run: |
@@ -84,7 +83,6 @@ jobs:
         with:
           java-version: ${{ env.JAVA_VERSION }}
           distribution: 'temurin'
-          cache: 'maven'
       
       - name: Restore build cache
         uses: actions/cache/restore@v4
