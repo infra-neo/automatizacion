@@ -36,7 +36,18 @@ jobs:
           java-version: ${{ env.JAVA_VERSION }}
           distribution: 'temurin'
       
+      - name: Check for Maven project
+        id: check-maven
+        run: |
+          if [ -f "pom.xml" ]; then
+            echo "maven_project=true" >> $GITHUB_OUTPUT
+          else
+            echo "maven_project=false" >> $GITHUB_OUTPUT
+            echo "No pom.xml found - skipping Maven build"
+          fi
+      
       - name: Verify Java version
+        if: steps.check-maven.outputs.maven_project == 'true'
         run: |
           echo "Java version:"
           java -version
@@ -44,11 +55,12 @@ jobs:
           mvn -version
       
       - name: Build App1
+        if: steps.check-maven.outputs.maven_project == 'true'
         run: mvn clean package -DskipTests
       
       - name: Save build cache
+        if: success() && steps.check-maven.outputs.maven_project == 'true'
         uses: actions/cache/save@v4
-        if: success()
         with:
           path: |
             target/
@@ -56,8 +68,8 @@ jobs:
           key: build-${{ github.sha }}
       
       - name: Upload build artifacts
+        if: success() && steps.check-maven.outputs.maven_project == 'true'
         uses: actions/upload-artifact@v4
-        if: success()
         with:
           name: build-artifacts
           path: |
@@ -84,20 +96,31 @@ jobs:
           java-version: ${{ env.JAVA_VERSION }}
           distribution: 'temurin'
       
+      - name: Check for Maven project
+        id: check-maven
+        run: |
+          if [ -f "pom.xml" ]; then
+            echo "maven_project=true" >> $GITHUB_OUTPUT
+          else
+            echo "maven_project=false" >> $GITHUB_OUTPUT
+            echo "No pom.xml found - skipping Maven tests"
+          fi
+      
       - name: Restore build cache
+        if: steps.check-maven.outputs.maven_project == 'true'
         uses: actions/cache/restore@v4
         with:
           path: |
             target/
             .m2/repository/
           key: build-${{ github.sha }}
-          fail-on-cache-miss: true
       
       - name: Run unit tests
+        if: steps.check-maven.outputs.maven_project == 'true'
         run: mvn test
       
       - name: Publish test results
+        if: always() && steps.check-maven.outputs.maven_project == 'true'
         uses: EnricoMi/publish-unit-test-result-action@v2
-        if: always()
         with:
           files: target/surefire-reports/TEST-*.xml
